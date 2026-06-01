@@ -232,8 +232,8 @@ def get_nearest_uncontrolled_scs(
 ) -> List[Tuple[str, int, List[str]]]:
     """
     Return up to N nearest supply centres not controlled by `power_name`,
-    excluding centres that are the unit’s own province (distance 0) or
-    adjacent in one move (distance 1).
+    including the unit’s own province if applicable (distance 0 means
+    holding captures the SC).
 
     Each tuple is (sc_code + ctrl_tag, distance, path_of_short_codes).
     """
@@ -261,9 +261,7 @@ def get_nearest_uncontrolled_scs(
 
         distance = len(path) - 1  # moves needed
 
-        # skip distance 0 (same province) and 1 (adjacent)
-        if distance <= 1:
-            continue
+        # distance 0 means the unit is sitting on this SC — holding captures it
 
         tag = f"{sc_short} (Ctrl: {controller or 'None'})"
         results.append((tag, distance, path))
@@ -434,9 +432,12 @@ def generate_rich_order_context_xml(game: Any, power_name: str, possible_orders_
         if uncontrolled_scs_info:
             current_unit_lines.append("      Nearest supply centers (not controlled by us):")
             for sc_str, dist, sc_path_short in uncontrolled_scs_info:
-                current_unit_lines.append(
-                    f"        {sc_str}, dist={dist}, path=[{unit_loc_full}→{('→'.join(sc_path_short[1:])) if len(sc_path_short) > 1 else sc_path_short[0]}]"
-                )
+                if dist == 0:
+                    current_unit_lines.append(f"        {sc_str}, dist=0 — YOU ARE HERE, hold to capture!")
+                else:
+                    current_unit_lines.append(
+                        f"        {sc_str}, dist={dist}, path=[{unit_loc_full}→{('→'.join(sc_path_short[1:])) if len(sc_path_short) > 1 else sc_path_short[0]}]"
+                    )
         else:
             current_unit_lines.append("      Nearest supply centers (not controlled by us): None found")
         current_unit_lines.append("    </NearestUncontrolledSupplyCenters>")
@@ -725,9 +726,12 @@ def _generate_rich_order_context_movement(
             n=3,
         )
         for sc_str, dist, sc_path in scs:
-            path_disp = "→".join([unit_loc_full] + sc_path[1:])
             sc_fmt = sc_str.replace("Ctrl:", "Controlled by")
-            block.append(f"{ind}{sc_fmt}, path [{path_disp}]")
+            if dist == 0:
+                block.append(f"{ind}{sc_fmt} — YOU ARE HERE, hold to capture!")
+            else:
+                path_disp = "→".join([unit_loc_full] + sc_path[1:])
+                block.append(f"{ind}{sc_fmt}, path [{path_disp}]")
 
         # ----- Possible moves -----
         block.append(f"# Possible {mover_descr} unit movements & supports:")
