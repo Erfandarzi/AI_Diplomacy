@@ -224,6 +224,11 @@ function renderBodyState() {
 function currentStatusText() {
   if (clientBusyText) return clientBusyText;
   if (gameState.busy) return "AI is thinking...";
+  if ((gameState.orderableLocations || []).length) {
+    if (gameState.phaseType === "R") return "Retreat needed";
+    if (gameState.phaseType === "A") return "Adjustment needed";
+    return "Your turn";
+  }
   return statusLabel(gameState.status);
 }
 
@@ -244,7 +249,26 @@ function isTargetingModeActive(location = selectedOrderLocation) {
 }
 
 function waitingForAiText() {
-  return "AI players are moving. The board will update when every country finishes.";
+  return busyDetailText();
+}
+
+function busyTitleText() {
+  if (pendingResolve) return "AI players are moving";
+  const status = String(gameState?.status || "");
+  if (/asking\s+\w+\s+for a reply/i.test(status)) return "AI reply pending";
+  if (/negotiat/i.test(status)) return "AI powers negotiating";
+  if (/resolving/i.test(status)) return "Resolving turn";
+  return "AI is thinking";
+}
+
+function busyDetailText() {
+  if (pendingResolve) return "Resolving orders. The board updates when every country finishes.";
+  const status = String(gameState?.status || "");
+  const replyMatch = status.match(/asking\s+(\w+)\s+for a reply/i);
+  if (replyMatch) return `Waiting for ${powerLabel(replyMatch[1])} to answer. Your orders are not being resolved right now.`;
+  if (/negotiat/i.test(status)) return "Waiting for AI press to finish.";
+  if (/resolving/i.test(status)) return "Resolving orders. The board updates when every country finishes.";
+  return status ? statusLabel(status) : "Waiting for the current AI action to finish.";
 }
 
 function renderAiStatus() {
@@ -1016,7 +1040,7 @@ function updateOrderHint() {
       gameState.phaseType === "A"
         ? adjustmentHelpText()
         : gameState.phaseType === "R"
-          ? "Pick a highlighted unit, then choose where it retreats."
+          ? retreatRequirementText()
           : "Pick a highlighted unit. Legal destinations turn green.";
     return;
   }
@@ -1042,7 +1066,7 @@ function renderTurnStatus() {
 
   if (pendingResolve || gameState.busy) {
     card.className = "turn-status-card resolving";
-    card.innerHTML = `<strong>AI players are moving</strong><span>Keep this open. The board updates when every country finishes.</span>`;
+    card.innerHTML = `<strong>${escapeHtml(busyTitleText())}</strong><span>${escapeHtml(busyDetailText())}</span>`;
     return;
   }
   if (gameState.isGameDone) {
@@ -1074,7 +1098,7 @@ function renderTurnStatus() {
     gameState.phaseType === "A"
       ? adjustmentHelpText()
       : gameState.phaseType === "R"
-        ? "Choose a retreat or disband for each highlighted unit."
+        ? retreatRequirementText()
         : "Holds are the default; change them on the map.";
   const contextText = gameState.phaseType === "A" ? `<span>${escapeHtml(adjustmentContextText())}</span>` : "";
   card.innerHTML = `
@@ -1248,7 +1272,7 @@ function renderTurnProgress() {
   const list = el("plannedOrdersList");
   if (!progress || !list) return;
   if (isBusy()) {
-    progress.innerHTML = `<span>Waiting for AI powers.</span>`;
+    progress.innerHTML = `<span>${escapeHtml(busyDetailText())}</span>`;
     list.innerHTML = "";
     return;
   }
@@ -1400,6 +1424,19 @@ function renderMapActionTray() {
         row.appendChild(button);
       }
       tray.appendChild(row);
+      return;
+    }
+    if (gameState.phaseType === "R") {
+      tray.innerHTML = `<span class="tray-note">${escapeHtml(retreatRequirementText())}</span>`;
+      for (const loc of gameState.orderableLocations) {
+        const actions = orderActionsForLocation(loc).filter((action) => ["retreat", "disband"].includes(action.kind));
+        if (!actions.length) continue;
+        const title = document.createElement("span");
+        title.className = "tray-title";
+        title.textContent = selectedLocationTitle(loc);
+        tray.appendChild(title);
+        appendActionGroup(tray, "", actions, "tray-action-button");
+      }
       return;
     }
     tray.innerHTML = `<span class="tray-note">Select a unit on the map.</span>`;
@@ -2848,8 +2885,11 @@ function updateResolveButtonLabel() {
   const text = button.querySelector("span:last-child");
   if (!text) return;
   button.title = "Submit everyone and finish this turn";
-  if (pendingResolve || gameState.busy) {
+  if (pendingResolve) {
     text.textContent = "Resolving...";
+  } else if (gameState.busy) {
+    text.textContent = busyTitleText();
+    button.title = busyDetailText();
   } else if (pendingReplies.size || replyWorkerRunning) {
     text.textContent = "Reply pending";
   } else if (!(gameState.orderableLocations || []).length) {
@@ -3163,6 +3203,34 @@ function adjustmentHelpText() {
   return "No builds or disbands are needed.";
 }
 
+function retreatRequirementText() {
+  const locations = gameState?.orderableLocations || [];
+  if (!locations.length) return `No ${powerLabel(gameState?.humanPower)} retreats are needed.`;
+  const summaries = locations.map((loc) => {
+    const unit = unitAt(loc);
+    const unitLabel = unit ? `${unit.type} ${provinceName(loc)}` : provinceName(loc);
+    const choices = gameState.possibleOrders?.[loc] || [];
+    const destinations = choices
+      .map((order) => {
+        const parts = String(order).trim().split(/\s+/);
+        const retreatIndex = parts.indexOf("R");
+        if (retreatIndex > -1 && parts[retreatIndex + 1]) return provinceName(parts[retreatIndex + 1]);
+        if (order.endsWith(" D")) return "disband";
+        return "";
+      })
+      .filter(Boolean);
+    const retreatNames = destinations.filter((item) => item !== "disband");
+    const destinationText = [
+      retreatNames.length ? joinNames(retreatNames) : "",
+      destinations.includes("disband") ? "disband" : "",
+    ].filter(Boolean).join(retreatNames.length ? " or " : "");
+    return destinationText
+      ? `${unitLabel} must retreat to ${destinationText}.`
+      : `${unitLabel} must choose a retreat or disband.`;
+  });
+  return summaries.join(" ");
+}
+
 function adjustmentContextText() {
   if (gameState?.phaseType !== "A") return "";
   const unitLocations = (gameState.unitViews || [])
@@ -3188,7 +3256,7 @@ function joinNames(names) {
 
 function orderRequirementMessage() {
   if (gameState?.phaseType === "A") return adjustmentHelpText();
-  if (gameState?.phaseType === "R") return "Choose a retreat or disband for every highlighted unit.";
+  if (gameState?.phaseType === "R") return retreatRequirementText();
   return "Holds are automatic; choose only the units you want to change.";
 }
 

@@ -83,3 +83,25 @@ def test_valid_named_support_unit_is_allowed():
     )
 
     assert conflict is None
+
+
+def test_false_negative_support_legality_claim_is_rejected():
+    game = Game()
+    game.clear_units()
+    game.set_units("FRANCE", ["F ENG"])
+    game.set_units("GERMANY", ["F HEL", "F HOL"])
+    game.set_units("ENGLAND", ["F NTH"])
+
+    session = HumanGameSession.__new__(HumanGameSession)
+    session.game = game
+    session.human_power = "FRANCE"
+
+    conflict = session._reply_tactical_legality_conflict(
+        "I can't support F ENG into NTH - it's not adjacent.",
+        "GERMANY",
+        gather_possible_orders(game, "GERMANY"),
+        game.get_state(),
+    )
+
+    assert conflict
+    assert "F ENG - NTH" in conflict

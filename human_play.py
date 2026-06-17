@@ -184,6 +184,7 @@ class HumanGameSession:
             self.agents = self._create_agents()
         self._load_session_state()
         self._ensure_phase()
+        self._drop_malformed_agent_reply_messages()
         self._ensure_agent_strategy_profiles()
         self._refresh_visible_relationship_profiles()
         if not is_resume:
@@ -507,6 +508,8 @@ class HumanGameSession:
         for phase in self.game_history.phases:
             for msg in phase.messages:
                 if msg.sender == "SYSTEM":
+                    continue
+                if self._is_malformed_agent_reply_message(msg.sender, msg.recipient, msg.content):
                     continue
                 if not real_ai and msg.sender != self.human_power:
                     continue
@@ -1483,6 +1486,32 @@ class HumanGameSession:
                 results.append((normalized, targets))
         return results
 
+    def _negative_support_denials_from_reply(self, content: str | None) -> list[dict[str, str]]:
+        if not content:
+            return []
+        province = r"[A-Z]{3}(?:/[A-Z]{2})?"
+        denials: list[dict[str, str]] = []
+        for sentence in re.split(r"(?<=[.?!;])\s+", str(content or "").upper()):
+            normalized = re.sub(r"\s+", " ", sentence.strip())
+            if not re.search(r"\b(?:CAN'?T|CANNOT|CAN NOT|NOT ABLE TO)\s+SUPPORT\b", normalized):
+                continue
+            if not re.search(r"\b(?:NOT ADJACENT|NOT LEGAL|ILLEGAL|CAN'?T REACH|CANNOT REACH|NOT ABLE)\b", normalized):
+                continue
+            for match in re.finditer(
+                rf"\bSUPPORT\s+(?:YOUR\s+|THE\s+)?([AF])?\s*({province})"
+                rf"(?:\s+(FLEET|ARMY))?\b[^.?!;]{{0,80}}?\b(?:TO|INTO|-)\s+({province})\b",
+                normalized,
+            ):
+                supported_type = match.group(1) or ({"FLEET": "F", "ARMY": "A"}.get(match.group(3) or "") or "")
+                denials.append(
+                    {
+                        "supported_type": supported_type,
+                        "supported_loc": self._base_code(match.group(2)),
+                        "target_loc": self._base_code(match.group(4)),
+                    }
+                )
+        return denials
+
     def _reply_tactical_legality_conflict(
         self,
         content: str | None,
@@ -1512,6 +1541,21 @@ class HumanGameSession:
                         f"Draft offers support into {target_loc}, but {target_loc} is one of {power_name}'s own supply centers. "
                         "Do not offer that casually; only say it if explicitly ceding or trading the center."
                     )
+
+        for denial in self._negative_support_denials_from_reply(content):
+            supported_loc = denial["supported_loc"]
+            target_loc = denial["target_loc"]
+            supported = self._unit_at_location(units, supported_loc)
+            supported_type = denial.get("supported_type") or (supported[1] if supported else "")
+            if not supported_type:
+                continue
+            suffix = f" S {supported_type} {supported_loc} - {target_loc}"
+            legal_matches = sorted(order for order in legal_orders if order.endswith(suffix))
+            if legal_matches:
+                return (
+                    f"Draft says support for {supported_type} {supported_loc} - {target_loc} is impossible, "
+                    f"but {power_name} has legal support orders including {legal_matches[0]}."
+                )
 
         conflicts: list[tuple[tuple[str, str, str], str]] = []
         valid_pairs: set[tuple[str, str, str]] = set()
@@ -1683,6 +1727,7 @@ class HumanGameSession:
             previous_cap = self._cap_client_tokens(agent.client, self.args.chat_max_tokens)
             raw_response_parts: list[str] = []
             content: str | None = None
+            format_conflict: str | None = None
             duplicate_match: str | None = None
             board_conflict: str | None = None
             tactical_conflict: str | None = None
@@ -1700,18 +1745,30 @@ class HumanGameSession:
                     )
                     raw_response_parts.append(raw_response_part)
                     content = self._parse_direct_reply(raw_response_part)
-                    duplicate_match = self._duplicate_reply_match(content, previous_replies)
-                    board_conflict = self._reply_current_board_conflict(content, board_state)
-                    tactical_conflict = self._reply_tactical_legality_conflict(
-                        content,
-                        power_name,
-                        possible_orders,
-                        board_state,
+                    format_conflict = self._direct_reply_format_conflict(raw_response_part, content)
+                    duplicate_match = self._duplicate_reply_match(content, previous_replies) if content else None
+                    board_conflict = self._reply_current_board_conflict(content, board_state) if content else None
+                    tactical_conflict = (
+                        self._reply_tactical_legality_conflict(
+                            content,
+                            power_name,
+                            possible_orders,
+                            board_state,
+                        )
+                        if content
+                        else None
                     )
-                    if not content or (not duplicate_match and not board_conflict and not tactical_conflict):
+                    if (not content and not format_conflict) or (
+                        content and not format_conflict and not duplicate_match and not board_conflict and not tactical_conflict
+                    ):
                         break
                     if duplicate_attempt == 0:
                         warnings = []
+                        if format_conflict:
+                            warnings.append(
+                                "Your draft was not usable as a direct reply: "
+                                f"{format_conflict}"
+                            )
                         if duplicate_match:
                             warnings.append(
                                 "Your draft repeated this previous reply almost verbatim: "
@@ -1733,8 +1790,12 @@ class HumanGameSession:
                             + "\n".join(warnings)
                             + "\nWrite a different response to the latest human message. Current board facts override old chat thread text. "
                             "If your condition is unchanged, say so in new words and ask for a concrete order trade. "
-                            "Do not name a support, move, convoy, build, or retreat unless it is legal from the current board."
+                            "Do not name a support, move, convoy, build, or retreat unless it is legal from the current board. "
+                            "Return one complete strict JSON object with a normal sentence in content."
                         )
+                if format_conflict and not content:
+                    content = self._direct_reply_format_fallback(power_name)
+                    raw_response_parts.append(f"[backend malformed-reply guard fallback] {content}")
                 if content and duplicate_match:
                     content = self._non_repeating_reply_fallback(
                         power_name,
@@ -1807,10 +1868,68 @@ class HumanGameSession:
         match = re.search(r'"content"\s*:\s*"(?P<content>(?:\\.|[^"\\])*)', raw_response, re.DOTALL)
         if match:
             return self._clean_jsonish_content(match.group("content"))[:900] or None
+        if self._looks_like_direct_reply_json(raw_response):
+            return None
         cleaned = raw_response.strip()
-        if cleaned.startswith("{") and '"send"' in cleaned:
-            cleaned = re.sub(r'^\s*\{+\s*"send"\s*:\s*(?:true|false)\s*,?\s*', "", cleaned, flags=re.IGNORECASE)
+        if self._is_malformed_agent_reply_content(cleaned):
+            return None
         return cleaned[:900] if cleaned else None
+
+    def _direct_reply_format_conflict(self, raw_response: str, content: str | None) -> str | None:
+        raw_response = self._strip_response_fence(raw_response)
+        if not raw_response:
+            return "The model returned an empty response."
+        try:
+            parsed = json.loads(raw_response)
+        except json.JSONDecodeError:
+            if self._looks_like_direct_reply_json(raw_response):
+                if content and not self._is_malformed_agent_reply_content(content):
+                    return None
+                return "The model returned malformed JSON without a usable content string."
+            return None
+        if not isinstance(parsed, dict):
+            return "The model returned JSON, but not the required reply object."
+        if parsed.get("send") is False:
+            return None
+        if parsed.get("send") is not True:
+            return "The reply object must set send to true or false."
+        if not str(parsed.get("content") or "").strip():
+            return "The reply object set send=true but content was empty."
+        return None
+
+    def _direct_reply_format_fallback(self, power_name: str) -> str:
+        return (
+            "My last reply came through garbled. Send me the exact order trade again, "
+            "and I will only commit to a support or move that is legal from my current orders."
+        )
+
+    def _looks_like_direct_reply_json(self, value: str | None) -> bool:
+        text = str(value or "").strip()
+        return text.startswith("{") and bool(re.search(r'"?(?:send|content)"?\s*:', text, flags=re.IGNORECASE))
+
+    def _is_malformed_agent_reply_content(self, content: str | None) -> bool:
+        text = str(content or "").strip()
+        if not text:
+            return False
+        if self._looks_like_direct_reply_json(text):
+            return True
+        return bool(re.fullmatch(r'\{+\s*"?(?:send|content)"?\s*:?\s*(?:true|false)?\s*,?\s*', text, flags=re.IGNORECASE))
+
+    def _is_malformed_agent_reply_message(self, sender: str, recipient: str, content: str | None) -> bool:
+        return sender != self.human_power and recipient == self.human_power and self._is_malformed_agent_reply_content(content)
+
+    def _drop_malformed_agent_reply_messages(self) -> None:
+        removed = 0
+        for phase in self.game_history.phases:
+            kept = []
+            for msg in phase.messages:
+                if self._is_malformed_agent_reply_message(msg.sender, msg.recipient, msg.content):
+                    removed += 1
+                    continue
+                kept.append(msg)
+            phase.messages = kept
+        if removed:
+            logger.warning("Dropped %s malformed agent reply message(s) from visible history.", removed)
 
     def _strip_response_fence(self, raw_response: str) -> str:
         cleaned = str(raw_response or "").strip()
@@ -1834,6 +1953,8 @@ class HumanGameSession:
                     (msg.sender == self.human_power and msg.recipient == other_power)
                     or (msg.sender == other_power and msg.recipient == self.human_power)
                 )
+                if self._is_malformed_agent_reply_message(msg.sender, msg.recipient, msg.content):
+                    continue
                 if between_players:
                     sender = "Human" if msg.sender == self.human_power else other_power
                     lines.append(f"{phase.name} {sender}: {msg.content}")
