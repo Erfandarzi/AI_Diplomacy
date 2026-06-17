@@ -55,6 +55,7 @@ let hoveredActionChoices = null;
 const orderModeByLocation = new Map();
 let orderDrag = null;
 let hiddenMapModeMenuLocation = null;
+let mapHoverClearTimer = null;
 
 const el = (id) => document.getElementById(id);
 
@@ -605,7 +606,7 @@ function installMapClickHandlers() {
     });
     path.addEventListener("mouseenter", () => handleMapPathHover(path));
     path.addEventListener("mousemove", () => handleMapPathHover(path));
-    path.addEventListener("mouseleave", () => clearMapHover(mapProvinceCode(path?.id)));
+    path.addEventListener("mouseleave", () => scheduleMapHoverClear(mapProvinceCode(path?.id)));
   }
 }
 
@@ -616,6 +617,7 @@ function handleMapPathClick(path) {
 
 function handleMapPathHover(path) {
   if (!canEnterOrders() || !selectedOrderLocation || pendingActionChoices || panStart) return;
+  cancelMapHoverClear();
   const code = mapProvinceCode(path?.id);
   if (!code) {
     clearMapHover();
@@ -633,9 +635,24 @@ function handleMapPathHover(path) {
   renderMapChoices();
 }
 
+function scheduleMapHoverClear(code = null) {
+  cancelMapHoverClear();
+  mapHoverClearTimer = window.setTimeout(() => {
+    mapHoverClearTimer = null;
+    clearMapHover(code);
+  }, 320);
+}
+
+function cancelMapHoverClear() {
+  if (!mapHoverClearTimer) return;
+  window.clearTimeout(mapHoverClearTimer);
+  mapHoverClearTimer = null;
+}
+
 function clearMapHover(code = null) {
   if (!hoveredActionChoices) return;
   if (code && hoveredActionChoices.code !== code) return;
+  cancelMapHoverClear();
   hoveredActionChoices = null;
   renderMapChoices();
 }
@@ -1600,8 +1617,9 @@ function recentHumanMoveOutcomes() {
 
 function renderMapActionPreview(overlay, prompt) {
   if (!prompt?.coord) return;
-  const preview = document.createElement("div");
-  preview.className = "map-action-preview";
+  const preview = document.createElement("button");
+  preview.type = "button";
+  preview.className = `map-action-preview ${prompt.actions.length ? "is-clickable" : ""}`;
   preview.style.left = `${(prompt.coord.x / gameState.mapViewBox.width) * 100}%`;
   preview.style.top = `${(prompt.coord.y / gameState.mapViewBox.height) * 100}%`;
   const visibleActions = prompt.actions.slice(0, 3);
@@ -1612,11 +1630,23 @@ function renderMapActionPreview(overlay, prompt) {
   preview.innerHTML = `
     <strong>${escapeHtml(provinceName(prompt.code))}</strong>
     <span>${escapeHtml(prompt.note || summary)}</span>
-    <div class="map-action-preview-list">
+    <span class="map-action-preview-list">
       ${visibleActions.map((action) => `<small>${escapeHtml(action.label)}${action.subtitle ? `: ${escapeHtml(action.subtitle)}` : ""}</small>`).join("")}
       ${extra > 0 ? `<small>+${extra} more</small>` : ""}
-    </div>
+    </span>
   `;
+  preview.addEventListener("pointerenter", cancelMapHoverClear);
+  preview.addEventListener("pointerleave", () => scheduleMapHoverClear(prompt.code));
+  preview.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!prompt.actions.length) return;
+    cancelMapHoverClear();
+    pendingActionChoices = prompt;
+    hoveredActionChoices = null;
+    renderMapActionTray();
+    renderMapChoices();
+    showToast(`${provinceName(prompt.code)}: choose the exact order.`);
+  });
   overlay.appendChild(preview);
 }
 

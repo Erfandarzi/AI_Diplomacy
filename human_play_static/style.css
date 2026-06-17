@@ -1951,9 +1951,22 @@ body.order-dragging .convoy-target-province {
   border-radius: 8px;
   background: oklch(97% 0.014 118 / 94%);
   color: var(--text);
+  appearance: none;
+  font: inherit;
+  text-align: left;
   padding: 7px 8px;
   box-shadow: 0 10px 28px oklch(8% 0.02 118 / 26%);
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.map-action-preview.is-clickable {
+  cursor: pointer;
+}
+
+.map-action-preview.is-clickable:hover {
+  background: oklch(99% 0.012 118 / 98%);
+  box-shadow: 0 12px 32px oklch(8% 0.02 118 / 30%);
 }
 
 .map-action-preview strong {
