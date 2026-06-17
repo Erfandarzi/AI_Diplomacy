@@ -2005,7 +2005,7 @@ class HumanGameSession:
                 if human_possible and current_human_orders is None:
                     if self.game.phase_type != "M":
                         raise ValueError("Choose the required retreat, build, waive, or disband orders before finishing.")
-                    current_human_orders = self._fallback_orders(human_possible, self.human_power)
+                    current_human_orders = self._fallback_orders(human_possible, self.human_power, prefer_active=False)
                     self.pending_human_orders[phase] = current_human_orders
                     self._save_session_state()
                 elif human_possible:
@@ -2055,7 +2055,7 @@ class HumanGameSession:
             for (power_name, possible_orders, _task), result in zip(order_tasks, results):
                 if isinstance(result, Exception):
                     logger.error("Order generation failed for %s; using fallback orders: %s", power_name, result)
-                    result = {"valid": self._fallback_orders(possible_orders, power_name), "invalid": []}
+                    result = {"valid": self._fallback_orders(possible_orders, power_name, prefer_active=True), "invalid": []}
                 accepted_orders[power_name] = result.get("valid", [])
                 invalid_orders[power_name] = result.get("invalid", [])
                 submitted_orders[power_name] = accepted_orders[power_name] + invalid_orders[power_name]
@@ -2170,12 +2170,24 @@ class HumanGameSession:
         elif self.game.phase_type == "R":
             missing_locations = [loc for loc in possible_orders if loc not in used_locations]
             if complete_missing:
-                valid.extend(self._fallback_orders({loc: possible_orders[loc] for loc in missing_locations}, power_name))
+                valid.extend(
+                    self._fallback_orders(
+                        {loc: possible_orders[loc] for loc in missing_locations},
+                        power_name,
+                        prefer_active=power_name != self.human_power,
+                    )
+                )
             elif missing_locations:
                 invalid.append(f"Retreat phase needs orders for: {', '.join(missing_locations)}")
         elif complete_missing:
             missing_locations = [loc for loc in possible_orders if loc not in used_locations]
-            valid.extend(self._fallback_orders({loc: possible_orders[loc] for loc in missing_locations}, power_name))
+            valid.extend(
+                self._fallback_orders(
+                    {loc: possible_orders[loc] for loc in missing_locations},
+                    power_name,
+                    prefer_active=power_name != self.human_power,
+                )
+            )
         return valid, invalid
 
     def _order_location(self, order: str) -> str | None:
@@ -2228,7 +2240,12 @@ class HumanGameSession:
     def _location_key(self, location: str | None) -> str:
         return (location or "").split("/")[0].upper()
 
-    def _fallback_orders(self, possible_orders: dict[str, list[str]], power_name: str | None = None) -> list[str]:
+    def _fallback_orders(
+        self,
+        possible_orders: dict[str, list[str]],
+        power_name: str | None = None,
+        prefer_active: bool = False,
+    ) -> list[str]:
         phase_type = self.game.phase_type
         if phase_type == "A":
             return self._complete_adjustment_orders(power_name or self.human_power, [], possible_orders)
@@ -2241,6 +2258,11 @@ class HumanGameSession:
             disbands = [o for o in choices if o.endswith(" D")]
             if phase_type == "R":
                 fallback.append((disbands or choices)[0])
+            elif prefer_active:
+                moves = [o for o in choices if " - " in o and " S " not in o and " C " not in o]
+                supports = [o for o in choices if " S " in o]
+                convoys = [o for o in choices if " C " in o]
+                fallback.append((moves or supports or convoys or holds or choices)[0])
             else:
                 fallback.append((holds or choices)[0])
         return fallback
