@@ -788,19 +788,29 @@ function renderLastOutcome() {
 
   const rows = orders.map((order) => ({
     order,
-    outcome: outcomeForOrder(order, phase.results || {}),
+    outcome: outcomeForOrder(order, phase),
   }));
-  const blocked = rows.filter((row) => row.outcome.severity === "blocked").length;
-  const warned = rows.filter((row) => row.outcome.severity === "warning").length;
-  const succeeded = rows.length - blocked - warned;
+  const visibleRows = rows.filter((row) => !row.outcome.quiet);
+  const blocked = visibleRows.filter((row) => row.outcome.severity === "blocked").length;
+  const warned = visibleRows.filter((row) => row.outcome.severity === "warning").length;
+  const positive = visibleRows.length - blocked - warned;
   card.className = `last-outcome-card ${blocked ? "has-blocked" : warned ? "has-warning" : "all-clear"}`;
+  if (!visibleRows.length) {
+    card.innerHTML = `
+      <div class="outcome-head">
+        <strong>${escapeHtml(displayPhase(phase.name))}</strong>
+        <span>No notable order results</span>
+      </div>
+    `;
+    return;
+  }
   card.innerHTML = `
     <div class="outcome-head">
       <strong>${escapeHtml(displayPhase(phase.name))}</strong>
-      <span>${succeeded} moved / ${blocked + warned} blocked</span>
+      <span>${positive} resolved / ${blocked + warned} blocked</span>
     </div>
     <div class="outcome-list">
-      ${rows.map((row) => `
+      ${visibleRows.map((row) => `
         <div class="outcome-row ${row.outcome.severity}">
           <span>${escapeHtml(row.outcome.label)}</span>
           <span>${escapeHtml(describeOrder(row.order))}</span>
@@ -811,12 +821,37 @@ function renderLastOutcome() {
   `;
 }
 
-function outcomeForOrder(order, results) {
+function outcomeForOrder(order, phase) {
+  const results = phase?.results || {};
   const key = orderResultKey(order);
   const rawResults = Array.isArray(results[key]) ? results[key] : [];
   const tags = rawResults.flat().map((tag) => String(tag || "").trim()).filter(Boolean);
   if (!tags.length) {
-    return { label: "Moved", reason: "Resolved successfully.", severity: "ok" };
+    const defended = defendedHoldOutcome(order, phase);
+    if (defended) return defended;
+    if (isHoldOrder(order)) {
+      return { label: "Hold", reason: "No attack to report.", severity: "quiet", quiet: true };
+    }
+    if (moveEndpoints(order)) {
+      return { label: "Moved", reason: "Arrived at the destination.", severity: "ok" };
+    }
+    const relation = orderRelationEndpoints(order);
+    if (relation?.kind === "support") {
+      return { label: "Supported", reason: "Support was not cut.", severity: "ok" };
+    }
+    if (relation?.kind === "convoy") {
+      return { label: "Convoyed", reason: "Convoy order was available for the route.", severity: "ok" };
+    }
+    if (isRetreatOrder(order)) {
+      return { label: "Retreated", reason: "Retreat completed.", severity: "ok" };
+    }
+    if (String(order || "").trim().endsWith(" B")) {
+      return { label: "Built", reason: "Adjustment completed.", severity: "ok" };
+    }
+    if (String(order || "").trim().endsWith(" D")) {
+      return { label: "Disbanded", reason: "Adjustment completed.", severity: "ok" };
+    }
+    return { label: "Resolved", reason: "Order completed.", severity: "ok" };
   }
   if (tags.includes("bounce")) {
     return { label: "Blocked", reason: bounceReason(order), severity: "blocked" };
@@ -843,6 +878,40 @@ function outcomeForOrder(order, results) {
     return { label: "Uncertain", reason: "The engine marked this result as conditional.", severity: "warning" };
   }
   return { label: tags.join(", "), reason: "Resolved with an engine note.", severity: "warning" };
+}
+
+function isHoldOrder(order) {
+  return String(order || "").trim().endsWith(" H");
+}
+
+function isRetreatOrder(order) {
+  return String(order || "").trim().split(/\s+/).includes("R");
+}
+
+function defendedHoldOutcome(order, phase) {
+  if (!isHoldOrder(order) || !phase?.submitted || !phase?.results) return null;
+  const parts = String(order || "").trim().split(/\s+/);
+  const heldLocation = provinceBaseCode(parts[1]);
+  if (!heldLocation) return null;
+  const attackers = [];
+  for (const [power, powerOrders] of Object.entries(phase.submitted || {})) {
+    if (power === gameState.humanPower) continue;
+    for (const candidate of powerOrders || []) {
+      const move = moveEndpoints(candidate);
+      if (provinceBaseCode(move?.to) !== heldLocation) continue;
+      const resultKey = orderResultKey(candidate);
+      const tags = Array.isArray(phase.results[resultKey])
+        ? phase.results[resultKey].flat().map((tag) => String(tag || "").trim())
+        : [];
+      if (tags.includes("bounce")) attackers.push(provinceName(move.from));
+    }
+  }
+  if (!attackers.length) return null;
+  return {
+    label: "Defended",
+    reason: `Held against ${attackers.join(", ")}.`,
+    severity: "ok",
+  };
 }
 
 function orderResultKey(order) {
