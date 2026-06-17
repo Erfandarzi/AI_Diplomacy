@@ -647,14 +647,27 @@ function handleProvinceClick(code) {
       showToast(`No ${kindLabel(activeMode).toLowerCase()} order for ${provinceName(code)}. Switch to ${kindLabel(mode)} mode first.`);
       return;
     }
+    if (activeMode === "support") {
+      showToast(supportRuleHint(selectedOrderLocation, code));
+      return;
+    }
+    if (activeMode === "convoy") {
+      showToast(`No convoy order for ${provinceName(code)}. Convoys need an army move by convoy and fleet convoy orders on the route.`);
+      return;
+    }
     cancelOrderSelection(`${provinceName(code)} is not legal for ${provinceName(selectedOrderLocation)}. Selection cancelled.`);
     return;
   }
-  chooseActionOrAsk(selectedOrderLocation, code, matchingActions);
+  chooseActionOrAsk(selectedOrderLocation, code, matchingActions, { activeMode });
 }
 
-function chooseActionOrAsk(location, code, actions) {
-  if (actions.length === 1) {
+function chooseActionOrAsk(location, code, actions, options = {}) {
+  const needsMapConfirmation =
+    options.forceMenu ||
+    options.activeMode === "support" ||
+    options.activeMode === "convoy" ||
+    actions.some((action) => ["support", "convoy", "convoy-move"].includes(action.kind));
+  if (actions.length === 1 && !needsMapConfirmation) {
     setDirectOrder(location, actions[0].order, actions[0]);
     return;
   }
@@ -664,6 +677,15 @@ function chooseActionOrAsk(location, code, actions) {
   renderMapActionTray();
   renderMap();
   showToast(`${provinceName(code)}: choose the exact order.`);
+}
+
+function supportRuleHint(location, code) {
+  const unit = unitAtBase(location);
+  const province = gameState.provinces?.[provinceBaseCode(code)];
+  if (unit?.type === "Army" && province?.type === "sea") {
+    return `No support order for ${provinceName(code)}. Armies can support fleets into coastal land provinces, but cannot support attacks into sea provinces.`;
+  }
+  return `No support order for ${provinceName(code)}. A unit can support only an action into a province it could legally enter.`;
 }
 
 function setDirectOrder(location, order, action = null) {
@@ -1216,7 +1238,7 @@ function trayGuidance(actions, activeMode = null) {
   if (gameState.phaseType === "A") return adjustmentHelpText();
   if (gameState.phaseType === "R") return "Retreat or disband this unit.";
   if (activeMode === "support") {
-    return "Support is optional. Adjacent units do not help automatically; this unit must spend its order supporting a hold or move.";
+    return "Support is optional. A unit can support an action into a province it could enter, so armies can support fleets into coastal land but not into sea.";
   }
   if (activeMode === "convoy") {
     return "Pick the convoy destination from the army. Matching fleet convoy orders are added automatically when clear.";
@@ -1268,7 +1290,12 @@ function renderMapChoices() {
   }
 
   const hoverPrompt = hoveredActionChoices?.location === selectedOrderLocation ? hoveredActionChoices : null;
-  if (hoverPrompt) renderMapActionPreview(overlay, hoverPrompt);
+  if (hoverPrompt) {
+    renderMapActionPreview(overlay, hoverPrompt);
+    return;
+  }
+
+  renderMapModeMenu(overlay);
 }
 
 function renderRecentOutcomeBadges(overlay) {
@@ -1362,6 +1389,57 @@ function renderMapActionMenu(overlay, prompt = pendingActionChoices) {
   cancel.innerHTML = `
     <span class="action-icon">${orderIconSvg("cancel", "action-svg")}</span>
     <span class="action-copy"><span>Cancel</span><small>Keep current order</small></span>
+  `;
+  cancel.addEventListener("click", (event) => {
+    event.stopPropagation();
+    cancelOrderSelection();
+  });
+  menu.appendChild(cancel);
+  overlay.appendChild(menu);
+}
+
+function renderMapModeMenu(overlay) {
+  if (!selectedOrderLocation || pendingActionChoices || hoveredActionChoices) return;
+  const coord = coordinateForLocation(selectedOrderLocation);
+  if (!coord) return;
+  const actions = orderActionsForLocation(selectedOrderLocation);
+  const modes = actionModes(actions);
+  if (!modes.length) return;
+  const activeMode = ensureOrderMode(selectedOrderLocation);
+  const menu = document.createElement("div");
+  menu.className = "map-mode-menu";
+  menu.style.left = `${(coord.x / gameState.mapViewBox.width) * 100}%`;
+  menu.style.top = `${(coord.y / gameState.mapViewBox.height) * 100}%`;
+  menu.innerHTML = `
+    <strong>${escapeHtml(provinceName(selectedOrderLocation))}</strong>
+    <span>${escapeHtml(selectedLocationTitle(selectedOrderLocation))}</span>
+  `;
+  for (const entry of modes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `map-mode-button ${entry.mode} ${entry.mode === activeMode ? "active" : ""}`;
+    button.innerHTML = `
+      <span class="action-icon">${orderIconSvg(entry.mode, "action-svg")}</span>
+      <span>${escapeHtml(entry.label)}</span>
+      <b>${entry.count}</b>
+    `;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      orderModeByLocation.set(selectedOrderLocation, entry.mode);
+      pendingActionChoices = null;
+      hoveredActionChoices = null;
+      renderMapActionTray();
+      renderMap();
+      showToast(`${entry.label} mode.`);
+    });
+    menu.appendChild(button);
+  }
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "map-mode-button cancel";
+  cancel.innerHTML = `
+    <span class="action-icon">${orderIconSvg("cancel", "action-svg")}</span>
+    <span>Cancel</span>
   `;
   cancel.addEventListener("click", (event) => {
     event.stopPropagation();
