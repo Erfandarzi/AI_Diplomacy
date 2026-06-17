@@ -1365,6 +1365,10 @@ class HumanGameSession:
     def _flat_possible_orders(self, possible_orders: dict[str, list[str]]) -> set[str]:
         return {str(order).upper() for choices in (possible_orders or {}).values() for order in choices or []}
 
+    def _power_center_locations(self, board_state: dict[str, Any], power_name: str) -> set[str]:
+        centers = board_state.get("centers", {}) if isinstance(board_state, dict) else {}
+        return {self._base_code(center) for center in centers.get(power_name, []) or [] if self._base_code(center)}
+
     def _support_claims_from_reply(self, content: str | None) -> list[dict[str, str]]:
         if not content:
             return []
@@ -1422,6 +1426,25 @@ class HumanGameSession:
         ):
             add_claim(match.group(1), match.group(2), raw=match.group(0))
 
+        for match in re.finditer(
+            rf"\bSUPPORT(?:S|ING)?\s+(?:YOUR\s+|THE\s+)?([AF])?\s*({province})"
+            rf"(?:\s+(FLEET|ARMY))?\b[^.?!;]{{0,100}}?\b(?:TO|INTO)\s+({province})\b"
+            rf"[^.?!;]{{0,100}}?\bWITH\s+((?:(?:[AF]\s+)?{province})(?:\s*(?:,|AND)\s*(?:[AF]\s+)?{province})*)",
+            text,
+        ):
+            supported_type = match.group(1) or ({"FLEET": "F", "ARMY": "A"}.get(match.group(3) or "") or "")
+            target_loc = match.group(4)
+            support_refs = re.findall(rf"(?:\b([AF])\s+)?\b(?!AND\b|OR\b)({province})\b", match.group(5))
+            for support_type, support_loc in support_refs:
+                add_claim(
+                    support_loc,
+                    target_loc,
+                    match.group(2),
+                    support_type=support_type or "",
+                    supported_type=supported_type,
+                    raw=match.group(0),
+                )
+
         deduped: list[dict[str, str]] = []
         seen: set[tuple[str, str, str, str]] = set()
         for claim in claims:
@@ -1437,6 +1460,29 @@ class HumanGameSession:
             deduped.append(claim)
         return deduped
 
+    def _support_target_sentences_from_reply(self, content: str | None) -> list[tuple[str, list[str]]]:
+        if not content:
+            return []
+        province = r"[A-Z]{3}(?:/[A-Z]{2})?"
+        sentences = re.split(r"(?<=[.?!;])\s+", str(content or ""))
+        results: list[tuple[str, list[str]]] = []
+        for sentence in sentences:
+            normalized = re.sub(r"\s+", " ", sentence.strip())
+            if not re.search(r"\bsupport(?:s|ing)?\b", normalized, flags=re.IGNORECASE):
+                continue
+            if re.search(r"\b(?:can'?t|cannot|won'?t|don'?t|do not|not|no)\b[^.?!;]{0,70}\bsupport", normalized, flags=re.IGNORECASE):
+                continue
+            targets = [self._base_code(match.group(1)) for match in re.finditer(rf"\b(?:TO|INTO)\s+({province})\b", normalized, flags=re.IGNORECASE)]
+            targets.extend(
+                self._base_code(match.group(1))
+                for match in re.finditer(rf"\bOR\s+({province})\b", normalized, flags=re.IGNORECASE)
+                if re.search(r"\b(?:TO|INTO)\s+[A-Z]{3}", normalized[: match.start()], flags=re.IGNORECASE)
+            )
+            targets = [target for target in dict.fromkeys(targets) if target]
+            if targets:
+                results.append((normalized, targets))
+        return results
+
     def _reply_tactical_legality_conflict(
         self,
         content: str | None,
@@ -1448,13 +1494,32 @@ class HumanGameSession:
             return None
         units = board_state.get("units", {}) if isinstance(board_state, dict) else {}
         legal_orders = self._flat_possible_orders(possible_orders)
-        conflicts: list[tuple[tuple[str, str], str]] = []
-        valid_pairs: set[tuple[str, str]] = set()
+        own_centers = self._power_center_locations(board_state, power_name)
+        own_occupied = {
+            self._unit_location(unit)
+            for unit in (units.get(power_name, []) or [])
+            if self._unit_location(unit)
+        }
+        concession_words = re.compile(r"\b(?:cede|concede|give you|hand over|evacuate|vacate|let you take|trade you|concession)\b", re.IGNORECASE)
+        for sentence, targets in self._support_target_sentences_from_reply(content):
+            if concession_words.search(sentence):
+                continue
+            for target_loc in targets:
+                if target_loc in own_occupied:
+                    return f"Draft offers support into {target_loc}, but {power_name} currently has a unit there."
+                if target_loc in own_centers:
+                    return (
+                        f"Draft offers support into {target_loc}, but {target_loc} is one of {power_name}'s own supply centers. "
+                        "Do not offer that casually; only say it if explicitly ceding or trading the center."
+                    )
+
+        conflicts: list[tuple[tuple[str, str, str], str]] = []
+        valid_pairs: set[tuple[str, str, str]] = set()
 
         for claim in self._support_claims_from_reply(content):
             support_loc = claim["support_loc"]
             target_loc = claim["target_loc"]
-            claim_pair = (claim.get("supported_loc") or "", target_loc)
+            claim_pair = (support_loc, claim.get("supported_loc") or "", target_loc)
             support_unit = self._unit_for_power_at_location(units, power_name, support_loc)
             if not support_unit:
                 conflicts.append((claim_pair, f"{power_name} has no current unit at {support_loc} to give that support."))
@@ -1606,6 +1671,8 @@ class HumanGameSession:
                 "When promising support, convoy, retreat, build, or movement, copy an exact legal order from the legal-order list or clearly say it is only a future idea. "
                 "Never claim you can order a unit to support itself or issue an order that is not currently legal. "
                 "Support rule: the supporting unit must be able to move to the destination being attacked or held; being adjacent to the attacking unit is not enough. "
+                "If you name multiple support units, every named support unit must have its own exact legal support order. "
+                "Do not casually offer support into a center you own or a province you occupy; only do that if you explicitly mean to cede, trade, or abandon it. "
                 "Answer the latest human message directly. If they ask for ideas, propose one or two concrete, legal tactical ideas grounded in the current phase and units. "
                 "Do not offer support into a province the human already occupies unless you clearly mean a later-phase plan. "
                 "Keep it under 80 words. Do not repeat your previous reply, even if your strategic condition has not changed; acknowledge the new message and vary the wording. "
