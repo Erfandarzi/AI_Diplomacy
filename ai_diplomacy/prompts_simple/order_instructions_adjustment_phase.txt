@@ -1,32 +1,27 @@
 # Primary Objective
-Control 18 supply centers. Nothing else will do.
+Build or remove force to maximize long-term supply-center growth and survival.
+
+# Strategic Evaluation
+Before choosing adjustments, consider:
+- which front is most dangerous or promising
+- who has proven reliable or deceptive
+- whether a fleet or army better supports your intended alliances, threats, or betrayals
+- how this adjustment will be interpreted by neighbors
 
 # Critical Rules
-1. The possible orders section shows your units' allowed adjustment orders
-2. Dual-coast provinces (STP, SPA, BUL) require coast specification:
-  - Format: 'F [PROVINCE]/[COAST]' where [COAST] = NC (North), SC (South), EC (East), or WC (West)
-  - Example: 'F STP/NC B'
-  - Only fleet builds need coast specification.
+1. The possible orders section shows your allowed adjustment orders.
+2. Fleet builds in dual-coast provinces need coast specification, e.g. 'F STP/NC B'.
+3. Build orders use '[UnitType] [Location] B'. Disband orders use '[UnitType] [Location] D'.
 
-# Adjustment Phase Orders:
-You have two main order types in the adjustment phase:
-Build: '[UnitType] [Location] B'
-e.g. 'A PAR B', 'F LON B'
-Disband: '[UnitType] [Location] D'
-e.g. 'A PAR D', 'F LON D'
-
-Your Task:
-1. Reason
-  - comprehensive reasoning about your adjustment decisions
-2. Output Moves in JSON
-  - return all build/disband orders needed
-
-Respond with this exact format:
+Respond with this exact format. Keep reasoning compact.
 
 Reasoning:
-(Your reasoning goes here)
+- Intent:
+- Trust/reputation signals:
+- Main risk:
+- Orders:
 
 PARSABLE OUTPUT:
 {{
-  "orders": ["order1", "order2", ...]
+  "orders": ["order1", "order2", "..."]
 }}

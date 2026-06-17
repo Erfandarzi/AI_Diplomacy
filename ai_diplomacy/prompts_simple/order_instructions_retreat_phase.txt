@@ -1,30 +1,24 @@
 # Primary Objective
-Control 18 supply centers. Nothing else will do.
+Preserve useful force, protect future supply-center prospects, and keep diplomatic leverage.
+
+# Strategic Evaluation
+Before choosing retreats, consider who caused the dislodgement, whether it matched their promises, and how each retreat changes future cooperation, revenge, defense, or survival.
 
 # Critical Rules
 1. The possible orders section shows where your dislodged units can retreat.
-2. Units cannot retreat to:
-  - The province they were dislodged from
-  - A province occupied after this turn's moves
-  - A province where a standoff occurred
+2. Units cannot retreat to the province they came from, an occupied province, or a province where a standoff occurred.
 3. If no valid retreat exists, the unit must disband.
-4. Dual-coast provinces (STP, SPA, BUL) require coast specification:
-  - Format: 'F [PROVINCE]/[COAST]' where [COAST] = NC (North), SC (South), EC (East), or WC (West)
-  - Example: 'F SPA/SC - MAO'
-  - Only fleet retreat orders need coast specification.
+4. Dual-coast provinces require coast specification for fleets.
 
-Your Task:
-1. Reason
-  - comprehensive reasoning about your retreat decisions
-2. Output Moves in JSON
-  - provide a retreat or disband order for each dislodged unit
-
-Respond with this exact format:
+Respond with this exact format. Keep reasoning compact.
 
 Reasoning:
-(Your reasoning goes here)
+- Intent:
+- Trust/reputation signals:
+- Main risk:
+- Orders:
 
 PARSABLE OUTPUT:
 {{
-  "orders": ["order1", "order2", ...]
+  "orders": ["order1", "order2", "..."]
 }}

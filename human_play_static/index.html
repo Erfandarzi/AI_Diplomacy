@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Human Diplomacy</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Diplomacy</div>
+          <h1 id="phaseTitle">Loading...</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="status-pill ai-pill" id="aiStatus">AI</div>
+          <div class="status-pill" id="humanPower">Power</div>
+          <div class="status-pill" id="statusText">Ready</div>
+          <button id="refreshButton" class="icon-text-button" type="button" title="Refresh game state">
+            <span aria-hidden="true">↻</span>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <section class="map-panel" aria-label="Diplomacy map">
+          <div id="mapFrame" class="map-frame">
+            <div id="mapViewport" class="map-viewport">
+              <div id="mapSvgMount" class="map-svg" aria-hidden="true"></div>
+              <svg id="orderArrowOverlay" class="order-arrow-overlay" aria-hidden="true"></svg>
+              <div id="unitOverlay" class="unit-overlay" aria-hidden="true"></div>
+              <div id="mapChoiceOverlay" class="map-choice-overlay" aria-live="polite"></div>
+            </div>
+            <div class="map-tools" aria-label="Map tools">
+              <button id="zoomOutButton" class="tool-button" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+              <button id="zoomResetButton" class="tool-button" type="button" title="Reset zoom" aria-label="Reset zoom">⌂</button>
+              <button id="zoomInButton" class="tool-button" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+              <button id="toggleArrowsButton" class="tool-button active" type="button" title="Show or hide move arrows" aria-label="Show or hide move arrows">↗</button>
+              <button id="toggleDockButton" class="tool-button" type="button" title="Show score and turn review" aria-label="Show score and turn review">☷</button>
+            </div>
+            <div class="map-legend" id="mapLegend">
+              <span><i class="legend-swatch owner"></i>Center owner</span>
+              <span><i class="legend-swatch occupier"></i>Unit present</span>
+              <span><i class="legend-swatch own"></i>Your planned moves</span>
+            </div>
+          </div>
+        </section>
+
+        <aside id="turnPanel" class="turn-panel">
+          <section class="panel-section orders-section">
+            <div class="section-head">
+              <h2>Your Moves</h2>
+            </div>
+            <div id="turnStatusCard" class="turn-status-card"></div>
+            <div id="lastOutcomeCard" class="last-outcome-card"></div>
+            <div id="orderModeHint" class="order-mode-hint">Click one of your units on the map, then click where it should move.</div>
+            <div id="mapActionTray" class="map-action-tray" aria-live="polite"></div>
+            <div id="turnProgress" class="turn-progress"></div>
+            <div id="plannedOrdersList" class="planned-orders-list"></div>
+            <button id="resolveButton" class="primary-action icon-text-button" type="button" title="Submit everyone and finish this turn">
+              <span aria-hidden="true">▶</span>
+              <span>Finish Turn</span>
+            </button>
+            <details class="advanced-orders">
+              <summary>Support, convoy, and all legal orders</summary>
+              <div id="ordersList" class="orders-list"></div>
+            </details>
+          </section>
+        </aside>
+
+        <aside id="sidePanel" class="side-panel">
+          <button id="togglePanelButton" class="panel-toggle" type="button" title="Hide chat" aria-label="Hide chat">›</button>
+          <section class="panel-section messages-section">
+            <div class="section-head">
+              <h2>Messages</h2>
+              <button id="runPressButton" class="icon-text-button" type="button" title="Let the other countries send messages">
+                <span aria-hidden="true">✦</span>
+                <span>Let Others Talk</span>
+              </button>
+            </div>
+            <div id="llmSetup" class="llm-setup">
+              <div>
+                <strong>OpenRouter not connected</strong>
+                <span>Uses the server-side OPENROUTER_API_KEY.</span>
+              </div>
+              <select id="openRouterModelSelect" aria-label="OpenRouter model">
+                <option value="openrouter:deepseek/deepseek-v4-flash">DeepSeek V4 Flash</option>
+                <option value="openrouter:deepseek/deepseek-chat">DeepSeek V3 Chat</option>
+                <option value="openrouter:google/gemini-2.5-flash">Gemini Flash</option>
+              </select>
+              <button id="connectOpenRouterButton" class="icon-text-button" type="button">
+                <span aria-hidden="true">●</span>
+                <span>Connect</span>
+              </button>
+            </div>
+            <div id="chatTabs" class="chat-tabs" aria-label="Conversations"></div>
+            <div id="messageLog" class="message-log"></div>
+            <div class="message-composer">
+              <select id="recipientSelect" aria-label="Recipient"></select>
+              <textarea id="messageInput" rows="3" placeholder="Write a message..."></textarea>
+              <div class="composer-actions">
+                <button id="sendMessageButton" class="icon-text-button" type="button" title="Send this message">
+                  <span aria-hidden="true">➤</span>
+                  <span>Send</span>
+                </button>
+                <button id="askReplyButton" class="icon-text-button" type="button" title="Ask this country to reply">
+                  <span aria-hidden="true">↩</span>
+                  <span>Get Reply</span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <section id="bottomDock" class="bottom-dock is-hidden">
+        <section>
+          <h2>Score</h2>
+          <div id="centersBoard" class="centers-board"></div>
+        </section>
+        <section>
+          <div class="history-head">
+            <h2>Turn Review</h2>
+            <div class="history-controls">
+              <button id="historyPrevButton" class="tool-button" type="button" title="Previous turn" aria-label="Previous turn">‹</button>
+              <span id="historyLabel">Latest</span>
+              <button id="historyNextButton" class="tool-button" type="button" title="Next turn" aria-label="Next turn">›</button>
+            </div>
+          </div>
+          <pre id="lastResult" class="last-result">(No resolved phase yet.)</pre>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

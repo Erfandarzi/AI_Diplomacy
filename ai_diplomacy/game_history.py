@@ -425,6 +425,26 @@ class GameHistory:
 
         return messages_str.strip()
 
+    def get_recent_messages_for_prompt(self, power_name: str, current_phase_name: str, limit: int = 16) -> str:
+        """
+        Compact recent message history visible to a power.
+
+        Includes global press and private messages involving the power, excluding
+        the current phase because get_messages_this_round already covers it.
+        """
+        visible = []
+        for phase in self.phases:
+            if phase.name == current_phase_name:
+                continue
+            for msg in phase.messages:
+                if msg.recipient == "GLOBAL" or msg.sender == power_name or msg.recipient == power_name:
+                    visible.append(
+                        f"{phase.name} {msg.sender}->{msg.recipient}: {msg.content}"
+                    )
+        if not visible:
+            return ""
+        return "\n".join(visible[-limit:])
+
     # New method to get recent messages TO a specific power
     def get_recent_messages_to_power(self, power_name: str, limit: int = 3) -> List[Dict[str, str]]:
         """

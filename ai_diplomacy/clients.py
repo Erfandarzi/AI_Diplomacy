@@ -779,6 +779,67 @@ class BaseModelClient:
 # 2) Concrete Implementations
 ##############################################################################
 
+class MockModelClient(BaseModelClient):
+    """Local deterministic stand-in for API-free local play and smoke tests."""
+
+    def __init__(self, model_name: str = "mock:local", prompts_dir: Optional[str] = None):
+        super().__init__(model_name, prompts_dir=prompts_dir)
+        self.max_tokens = 0
+
+    async def generate_response(self, prompt: str, temperature: float = 0.0, inject_random_seed: bool = True) -> str:
+        return "{}"
+
+    async def get_orders(
+        self,
+        game,
+        board_state,
+        power_name: str,
+        possible_orders: Dict[str, List[str]],
+        conversation_text,
+        model_error_stats: dict,
+        log_file_path: str,
+        phase: str,
+        agent_goals: Optional[List[str]] = None,
+        agent_relationships: Optional[Dict[str, str]] = None,
+        agent_private_diary_str: Optional[str] = None,
+    ) -> List[str]:
+        orders = []
+        for choices in possible_orders.values():
+            if not choices:
+                continue
+            moves = [order for order in choices if " - " in order and " S " not in order and " C " not in order]
+            holds = [order for order in choices if order.endswith(" H")]
+            builds = [order for order in choices if order.endswith(" B")]
+            disbands = [order for order in choices if order.endswith(" D")]
+            orders.append((moves or holds or builds or disbands or choices)[0])
+        return orders
+
+    async def get_conversation_reply(
+        self,
+        game,
+        board_state,
+        power_name: str,
+        possible_orders: Dict[str, List[str]],
+        game_history: GameHistory,
+        game_phase: str,
+        log_file_path: str,
+        active_powers: Optional[List[str]] = None,
+        agent_goals: Optional[List[str]] = None,
+        agent_relationships: Optional[Dict[str, str]] = None,
+        agent_private_diary_str: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        powers = active_powers or list(game.powers.keys())
+        rivals = [power for power in powers if power != power_name and not game.powers[power].is_eliminated()]
+        recipient = rivals[0] if rivals else "GLOBAL"
+        return [
+            {
+                "message_type": "private" if recipient != "GLOBAL" else "global",
+                "recipient": recipient,
+                "content": f"{power_name} is looking for a practical arrangement in {game_phase}.",
+            }
+        ]
+
+
 class OpenAIClient(BaseModelClient):
     """Async client for OpenAI-compatible chat-completion endpoints."""
 
@@ -1470,6 +1531,8 @@ def load_model_client(model_id: str, prompts_dir: Optional[str] = None) -> BaseM
     # 1. Explicit prefix path                                           #
     # ------------------------------------------------------------------ #
     if spec.prefix:
+        if spec.prefix.lower() == "mock":
+            return MockModelClient(model_name=model_id, prompts_dir=prompts_dir)
         try:
             pref = Prefix(spec.prefix.lower())
         except ValueError as exc:

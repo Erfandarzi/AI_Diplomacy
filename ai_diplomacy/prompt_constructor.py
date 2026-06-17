@@ -94,6 +94,14 @@ def build_context_prompt(
         messages_this_round_text = game_history.get_messages_this_round(power_name=power_name, current_phase_name=year_phase)
         if not messages_this_round_text.strip():
             messages_this_round_text = "\n(No messages this round)\n"
+        recent_messages = ""
+        if hasattr(game_history, "get_recent_messages_for_prompt"):
+            recent_messages = game_history.get_recent_messages_for_prompt(power_name=power_name, current_phase_name=year_phase)
+        if recent_messages:
+            messages_this_round_text = (
+                f"{messages_this_round_text}\n\n"
+                f"RECENT MESSAGE HISTORY VISIBLE TO YOU:\n{recent_messages}"
+            )
     else:
         messages_this_round_text = "\n"
 
@@ -209,9 +217,7 @@ def construct_order_generation_prompt(
         instructions = load_prompt(instructions_file, prompts_dir=prompts_dir)
     _use_simple = config.SIMPLE_PROMPTS
 
-    include_order_history = False # defaulting to not include order history in order generation prompt for now
-    #if power_name.lower() == 'france':
-    #    include_order_history = True # REVERT THIS
+    include_order_history = True
 
     # Build the context prompt
     context = build_context_prompt(
@@ -224,7 +230,7 @@ def construct_order_generation_prompt(
         agent_relationships=agent_relationships,
         agent_private_diary=agent_private_diary_str,
         prompts_dir=prompts_dir,
-        include_messages=not _use_simple,  # include only when *not* simple
+        include_messages=True,
         include_order_history=include_order_history,
         include_possible_moves_summary=True,
     )
