@@ -1297,6 +1297,18 @@ class HumanGameSession:
                     f"but current {self.human_power} units are: {self._current_human_units_text(board_state)}."
                 )
 
+        for match in re.finditer(
+            r"\b(?:moved|ordered|sent)\s+(?:your\s+)?([AF])\s+([A-Z]{3})(?:/[A-Z]{2})?\s+(?:-|to|into)\s+([A-Z]{3})(?:/[A-Z]{2})?\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            target_loc = self._base_code(match.group(3))
+            if target_loc not in human_locations:
+                return (
+                    f"Draft says {self.human_power} moved {match.group(1).upper()} {self._base_code(match.group(2))} to {target_loc}, "
+                    f"but current {self.human_power} units are: {self._current_human_units_text(board_state)}."
+                )
+
         if re.search(r"\b(?:didn't|did not|never)\s+(?:actually\s+)?(?:retreat|move|leave)\b", text, flags=re.IGNORECASE):
             latest_move_locations = {loc for loc in human_locations if re.search(rf"\b{re.escape(loc)}\b", text, flags=re.IGNORECASE)}
             if latest_move_locations:
