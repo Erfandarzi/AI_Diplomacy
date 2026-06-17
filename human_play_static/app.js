@@ -231,6 +231,10 @@ function isBusy() {
   return Boolean(gameState?.busy || pendingResolve);
 }
 
+function isResolvingPhase() {
+  return Boolean(pendingResolve || String(gameState?.status || "").toLowerCase().includes("resolving phase"));
+}
+
 function canEnterOrders() {
   return Boolean(gameState && !isBusy() && !gameState.isGameDone && !isReviewingBoard());
 }
@@ -2229,6 +2233,7 @@ function renderOrderArrows() {
   overlay.setAttribute("viewBox", `0 0 ${gameState.mapViewBox.width} ${gameState.mapViewBox.height}`);
   overlay.setAttribute("preserveAspectRatio", "none");
   overlay.innerHTML = "";
+  overlay.classList.toggle("is-resolving", isResolvingPhase());
   if (!showArrows) return;
 
   const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
@@ -2258,18 +2263,20 @@ function renderOrderArrows() {
     }
   }
 
+  let courierIndex = 0;
+  const resolving = isResolvingPhase();
   for (const order of selectedOrders()) {
-    drawMoveArrow(overlay, order, "own");
+    if (drawMoveArrow(overlay, order, "own", { animateCourier: resolving, courierIndex })) courierIndex += 1;
     drawOrderRelation(overlay, order);
   }
 }
 
-function drawMoveArrow(overlay, order, kind) {
+function drawMoveArrow(overlay, order, kind, options = {}) {
   const move = moveEndpoints(order);
-  if (!move) return;
+  if (!move) return false;
   const start = coordinateForLocation(move.from);
   const end = coordinateForLocation(move.to);
-  if (!start || !end) return;
+  if (!start || !end) return false;
 
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -2281,7 +2288,8 @@ function drawMoveArrow(overlay, order, kind) {
 
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.classList.add("move-arrow", `move-arrow-${kind}`);
-  path.setAttribute("d", `M ${start.x} ${start.y} Q ${controlX} ${controlY} ${end.x} ${end.y}`);
+  const pathData = `M ${start.x} ${start.y} Q ${controlX} ${controlY} ${end.x} ${end.y}`;
+  path.setAttribute("d", pathData);
   path.setAttribute("marker-end", `url(#arrow-${kind})`);
   overlay.appendChild(path);
 
@@ -2292,7 +2300,43 @@ function drawMoveArrow(overlay, order, kind) {
     overlay.appendChild(flow);
     drawMoveEndpoint(overlay, start, "origin");
     drawMoveEndpoint(overlay, end, "target");
+    if (options.animateCourier) {
+      drawResolvingMoveCourier(overlay, order, pathData, options.courierIndex || 0);
+    }
   }
+  return true;
+}
+
+function drawResolvingMoveCourier(overlay, order, pathData, index = 0) {
+  const parts = String(order || "").trim().split(/\s+/);
+  const unitType = parts[0] === "F" ? "fleet" : "army";
+  const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  group.classList.add("resolving-move-courier", `resolving-move-courier-${unitType}`);
+  group.setAttribute("aria-hidden", "true");
+
+  const halo = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  halo.classList.add("courier-halo");
+  halo.setAttribute("r", "14");
+
+  const body = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  body.classList.add("courier-body");
+  body.setAttribute("r", "10");
+  body.setAttribute("fill", powerColors[gameState.humanPower] || "oklch(74% 0.11 252)");
+
+  const symbol = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  symbol.classList.add("courier-symbol");
+  symbol.setAttribute("text-anchor", "middle");
+  symbol.setAttribute("dominant-baseline", "central");
+  symbol.textContent = unitType === "fleet" ? "⚓" : "⚔";
+
+  const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+  motion.setAttribute("dur", "4.8s");
+  motion.setAttribute("begin", `${(index % 6) * 0.42}s`);
+  motion.setAttribute("repeatCount", "indefinite");
+  motion.setAttribute("path", pathData);
+
+  group.append(halo, body, symbol, motion);
+  overlay.appendChild(group);
 }
 
 function drawMoveEndpoint(overlay, coord, role) {

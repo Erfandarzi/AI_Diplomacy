@@ -540,6 +540,33 @@ h2 {
   animation: endpointPulse 1100ms cubic-bezier(0.25, 1, 0.5, 1) infinite;
 }
 
+.resolving-move-courier {
+  pointer-events: none;
+  filter: drop-shadow(0 3px 8px oklch(8% 0.02 118 / 42%));
+}
+
+.courier-halo {
+  fill: oklch(98% 0.012 118 / 36%);
+  stroke: oklch(54% 0.16 142 / 52%);
+  stroke-width: 2.4;
+  animation: courierHaloPulse 1200ms cubic-bezier(0.25, 1, 0.5, 1) infinite;
+}
+
+.courier-body {
+  stroke: oklch(98% 0.012 118);
+  stroke-width: 2.4;
+}
+
+.courier-symbol {
+  fill: oklch(10% 0.02 118);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 950;
+  paint-order: stroke;
+  stroke: oklch(98% 0.012 118 / 66%);
+  stroke-width: 0.8;
+}
+
 @keyframes plannedArrowFlow {
   to {
     stroke-dashoffset: -36;
@@ -554,6 +581,17 @@ h2 {
   50% {
     transform: scale(1.18);
     opacity: 1;
+  }
+}
+
+@keyframes courierHaloPulse {
+  0%, 100% {
+    opacity: 0.58;
+    transform: scale(0.88);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
   }
 }
 
@@ -2281,11 +2319,16 @@ body.order-dragging .convoy-target-province {
   .move-target-province,
   .support-target-province,
   .convoy-target-province,
+  .courier-halo,
   .move-outcome-badge.victory,
   .unit-token.dislodged,
   .map-action-menu-button .action-svg,
   .tray-action-button .action-svg {
     animation: none;
+  }
+
+  .resolving-move-courier {
+    display: none;
   }
 }
 
