@@ -1257,6 +1257,73 @@ class HumanGameSession:
                 return previous
         return None
 
+    def _current_human_units_text(self, board_state: dict[str, Any]) -> str:
+        units = board_state.get("units", {}) if isinstance(board_state, dict) else {}
+        human_units = [str(unit) for unit in units.get(self.human_power, []) or []]
+        return ", ".join(human_units) or "none"
+
+    def _reply_current_board_conflict(self, content: str | None, board_state: dict[str, Any]) -> str | None:
+        if not content:
+            return None
+        units = board_state.get("units", {}) if isinstance(board_state, dict) else {}
+        human_units = [str(unit) for unit in units.get(self.human_power, []) or []]
+        human_locations = {self._unit_location(unit) for unit in human_units}
+        if not human_locations:
+            return None
+
+        text = str(content)
+        for match in re.finditer(
+            r"\b([AF])\s+([A-Z]{3})(?:/[A-Z]{2})?\s+(?:is\s+)?(?:still\s+)?(?:in|at|on)\s+([A-Z]{3})(?:/[A-Z]{2})?\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            unit_loc = self._base_code(match.group(2))
+            claimed_loc = self._base_code(match.group(3))
+            if unit_loc == claimed_loc and unit_loc not in human_locations:
+                return (
+                    f"Draft says {self.human_power} has {match.group(1).upper()} {unit_loc}, "
+                    f"but current {self.human_power} units are: {self._current_human_units_text(board_state)}."
+                )
+
+        for match in re.finditer(
+            r"\b(?:i\s+)?see\s+(?:your\s+)?([AF])\s+([A-Z]{3})(?:/[A-Z]{2})?\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            unit_loc = self._base_code(match.group(2))
+            if unit_loc not in human_locations:
+                return (
+                    f"Draft says it sees {self.human_power} {match.group(1).upper()} {unit_loc}, "
+                    f"but current {self.human_power} units are: {self._current_human_units_text(board_state)}."
+                )
+
+        if re.search(r"\b(?:didn't|did not|never)\s+(?:actually\s+)?(?:retreat|move|leave)\b", text, flags=re.IGNORECASE):
+            latest_move_locations = {loc for loc in human_locations if re.search(rf"\b{re.escape(loc)}\b", text, flags=re.IGNORECASE)}
+            if latest_move_locations:
+                return (
+                    f"Draft denies a move into {', '.join(sorted(latest_move_locations))}, "
+                    f"but current {self.human_power} units include: {self._current_human_units_text(board_state)}."
+                )
+        return None
+
+    def _board_conflict_reply_fallback(
+        self,
+        latest_human_message: str,
+        board_state: dict[str, Any],
+        conflict: str,
+    ) -> str:
+        human_units = self._current_human_units_text(board_state)
+        latest = str(latest_human_message or "").upper()
+        if "SER" in latest or "ALB" in latest:
+            return (
+                f"I checked the current board: {self.human_power} has {human_units}. "
+                "You did leave Serbia for Albania. I should judge the position from that."
+            )
+        return (
+            f"I need to correct my read of the current board: {self.human_power} has {human_units}. "
+            "Let's talk from that position."
+        )
+
     def _non_repeating_reply_fallback(
         self,
         power_name: str,
@@ -1344,6 +1411,7 @@ class HumanGameSession:
                 "Use only information your power can legitimately know from public press, your private messages, "
                 "your private diary, and the board state. Do not reveal private talks with other powers. "
                 "Before replying, silently compare the latest human message with the tactical facts. "
+                "Treat TACTICAL FACTS as authoritative over old private thread text or your previous replies. "
                 "If the facts contradict something you said earlier, acknowledge the current board accurately. "
                 "Do not call a province open if the last submitted orders or current units show a unit there. "
                 "If you have no legal orders this phase, do not claim you can act immediately this phase. "
@@ -1365,6 +1433,7 @@ class HumanGameSession:
             raw_response_parts: list[str] = []
             content: str | None = None
             duplicate_match: str | None = None
+            board_conflict: str | None = None
             try:
                 prompt = raw_prompt
                 for duplicate_attempt in range(2):
@@ -1380,14 +1449,27 @@ class HumanGameSession:
                     raw_response_parts.append(raw_response_part)
                     content = self._parse_direct_reply(raw_response_part)
                     duplicate_match = self._duplicate_reply_match(content, previous_replies)
-                    if not content or not duplicate_match:
+                    board_conflict = self._reply_current_board_conflict(content, board_state)
+                    if not content or (not duplicate_match and not board_conflict):
                         break
                     if duplicate_attempt == 0:
+                        warnings = []
+                        if duplicate_match:
+                            warnings.append(
+                                "Your draft repeated this previous reply almost verbatim: "
+                                f"{duplicate_match}"
+                            )
+                        if board_conflict:
+                            warnings.append(
+                                "Your draft contradicted the authoritative current board: "
+                                f"{board_conflict}"
+                            )
                         prompt = (
                             f"{raw_prompt}\n\n"
-                            "BACKEND DUPLICATE WARNING:\n"
-                            f"Your draft repeated this previous reply almost verbatim: {duplicate_match}\n"
-                            "Write a different response to the latest human message. If your condition is unchanged, say so in new words and ask for a concrete order trade."
+                            "BACKEND REPLY WARNING:\n"
+                            + "\n".join(warnings)
+                            + "\nWrite a different response to the latest human message. Current board facts override old chat thread text. "
+                            "If your condition is unchanged, say so in new words and ask for a concrete order trade."
                         )
                 if content and duplicate_match:
                     content = self._non_repeating_reply_fallback(
@@ -1397,6 +1479,13 @@ class HumanGameSession:
                         board_state,
                     )
                     raw_response_parts.append(f"[backend duplicate guard fallback] {content}")
+                if content and board_conflict:
+                    content = self._board_conflict_reply_fallback(
+                        latest_human_message,
+                        board_state,
+                        board_conflict,
+                    )
+                    raw_response_parts.append(f"[backend current-board guard fallback] {content}")
             finally:
                 self._restore_client_tokens(agent.client, previous_cap)
             raw_response = "\n\n--- backend direct reply attempt ---\n\n".join(raw_response_parts)

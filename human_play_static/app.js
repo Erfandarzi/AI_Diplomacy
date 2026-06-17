@@ -573,6 +573,7 @@ function plannedOrderCodes() {
     if (move?.to) targets.add(provinceBaseCode(move.to));
     const relation = orderRelationEndpoints(order);
     if (relation?.to) targets.add(provinceBaseCode(relation.to));
+    if (relation?.supportFrom) targets.add(provinceBaseCode(relation.supportFrom));
     const retreatIndex = parts.indexOf("R");
     if (retreatIndex > -1 && parts[retreatIndex + 1]) {
       targets.add(provinceBaseCode(parts[retreatIndex + 1]));
@@ -626,24 +627,24 @@ function handleProvinceClick(code) {
     return;
   }
 
-  if (orderableLocation && orderableLocation !== selectedOrderLocation) {
-    selectOrderLocation(orderableLocation);
-    return;
-  }
-
   const activeMode = ensureOrderMode(selectedOrderLocation);
   const activeMatches = activeModeActionsForCode(selectedOrderLocation, code);
   const allMatches = actionsForCode(selectedOrderLocation, code);
   const localMatches = allMatches.filter((action) => actionMode(action) === "local");
-  const matchingActions = allMatches.length
-    ? allMatches
+  if (orderableLocation && orderableLocation !== selectedOrderLocation && !activeMatches.length) {
+    selectOrderLocation(orderableLocation);
+    return;
+  }
+
+  const matchingActions = activeMatches.length
+    ? sortActionsForMode(allMatches, activeMode)
     : activeMode === "local"
       ? localMatches
       : [];
   if (!matchingActions.length) {
     if (allMatches.length) {
       const mode = actionMode(allMatches[0]);
-      showToast(`Switch to ${kindLabel(mode)} mode first.`);
+      showToast(`No ${kindLabel(activeMode).toLowerCase()} order for ${provinceName(code)}. Switch to ${kindLabel(mode)} mode first.`);
       return;
     }
     cancelOrderSelection(`${provinceName(code)} is not legal for ${provinceName(selectedOrderLocation)}. Selection cancelled.`);
@@ -1344,12 +1345,25 @@ function sameActionChoicePayload(left, right) {
 function activeModeActionsForCode(location, code) {
   const activeMode = ensureOrderMode(location);
   return orderActionsForLocation(location).filter(
-    (action) => actionMode(action) === activeMode && actionTargetCode(action) === code,
+    (action) => actionMode(action) === activeMode && actionMatchesMapCode(action, code),
   );
 }
 
 function actionsForCode(location, code) {
-  return orderActionsForLocation(location).filter((action) => actionTargetCode(action) === code);
+  return sortActionsForMode(
+    orderActionsForLocation(location).filter((action) => actionMatchesMapCode(action, code)),
+    ensureOrderMode(location),
+  );
+}
+
+function sortActionsForMode(actions, activeMode) {
+  return [...actions].sort((left, right) => {
+    const leftMode = actionMode(left);
+    const rightMode = actionMode(right);
+    const leftActive = leftMode === activeMode ? 0 : 1;
+    const rightActive = rightMode === activeMode ? 0 : 1;
+    return leftActive - rightActive || left.priority - right.priority || left.label.localeCompare(right.label);
+  });
 }
 
 function orderActionsForLocation(location) {
@@ -1547,6 +1561,22 @@ function actionTargetCode(action) {
   return "";
 }
 
+function actionMatchesMapCode(action, code) {
+  const base = provinceBaseCode(code);
+  if (actionTargetCode(action) === base) return true;
+  if (action.kind === "support") {
+    const parts = String(action.order).trim().split(/\s+/);
+    const supportIndex = parts.indexOf("S");
+    return provinceBaseCode(parts[supportIndex + 2]) === base;
+  }
+  if (action.kind === "convoy") {
+    const parts = String(action.order).trim().split(/\s+/);
+    const convoyIndex = parts.indexOf("C");
+    return provinceBaseCode(parts[convoyIndex + 2]) === base;
+  }
+  return false;
+}
+
 function setOrderDraft(location, order) {
   draftOrdersByLocation.set(location, order);
   explicitOrderLocations.add(location);
@@ -1660,6 +1690,9 @@ function renderOrderArrows() {
     <marker id="arrow-support" viewBox="0 0 16 16" markerWidth="16" markerHeight="16" refX="13" refY="8" orient="auto" markerUnits="userSpaceOnUse">
       <path d="M2,3 L14,8 L2,13 Z"></path>
     </marker>
+    <marker id="arrow-support-attack" viewBox="0 0 16 16" markerWidth="18" markerHeight="18" refX="13" refY="8" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M2,3 L14,8 L2,13 Z"></path>
+    </marker>
     <marker id="arrow-convoy" viewBox="0 0 16 16" markerWidth="16" markerHeight="16" refX="13" refY="8" orient="auto" markerUnits="userSpaceOnUse">
       <path d="M2,3 L14,8 L2,13 Z"></path>
     </marker>
@@ -1723,6 +1756,9 @@ function drawMoveEndpoint(overlay, coord, role) {
 function drawOrderRelation(overlay, order) {
   const relation = orderRelationEndpoints(order);
   if (!relation) return;
+  if (relation.kind === "support" && relation.supportFrom && provinceBaseCode(relation.supportFrom) !== provinceBaseCode(relation.to)) {
+    if (drawSupportMoveRelation(overlay, relation)) return;
+  }
   const start = coordinateForLocation(relation.from);
   const end = coordinateForLocation(relation.to);
   if (!start || !end) return;
@@ -1743,12 +1779,59 @@ function drawOrderRelation(overlay, order) {
   flow.setAttribute("d", path.getAttribute("d"));
   overlay.appendChild(flow);
 
+  drawRelationBadge(
+    overlay,
+    relation,
+    relation.kind === "convoy"
+      ? start
+      : { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 },
+  );
+}
+
+function drawSupportMoveRelation(overlay, relation) {
+  const support = coordinateForLocation(relation.from);
+  const attacker = coordinateForLocation(relation.supportFrom);
+  const target = coordinateForLocation(relation.to);
+  if (!support || !attacker || !target) return false;
+
+  const assistPath = `M ${support.x} ${support.y} L ${attacker.x} ${attacker.y}`;
+  const attackPath = `M ${attacker.x} ${attacker.y} L ${target.x} ${target.y}`;
+
+  const assist = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  assist.classList.add("move-arrow", "move-arrow-support", "move-arrow-support-link");
+  assist.setAttribute("d", assistPath);
+  assist.setAttribute("marker-end", "url(#arrow-support)");
+  overlay.appendChild(assist);
+
+  const attack = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  attack.classList.add("move-arrow", "move-arrow-support-attack");
+  attack.setAttribute("d", attackPath);
+  attack.setAttribute("marker-end", "url(#arrow-support-attack)");
+  overlay.appendChild(attack);
+
+  const assistFlow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  assistFlow.classList.add("move-arrow-flow", "move-arrow-flow-support");
+  assistFlow.setAttribute("d", assistPath);
+  overlay.appendChild(assistFlow);
+
+  const attackFlow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  attackFlow.classList.add("move-arrow-flow", "move-arrow-flow-support-attack");
+  attackFlow.setAttribute("d", attackPath);
+  overlay.appendChild(attackFlow);
+
+  drawMoveEndpoint(overlay, target, "target");
+  drawRelationBadge(
+    overlay,
+    relation,
+    { x: (support.x + attacker.x) / 2, y: (support.y + attacker.y) / 2 },
+  );
+  return true;
+}
+
+function drawRelationBadge(overlay, relation, coord) {
   const badge = document.createElementNS("http://www.w3.org/2000/svg", "g");
   badge.classList.add("order-relation-badge", `order-relation-badge-${relation.kind}`);
-  badge.setAttribute(
-    "transform",
-    `translate(${relation.kind === "convoy" ? start.x : (start.x + end.x) / 2} ${relation.kind === "convoy" ? start.y : (start.y + end.y) / 2})`,
-  );
+  badge.setAttribute("transform", `translate(${coord.x} ${coord.y})`);
   const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
   circle.setAttribute("r", "13");
   const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -1776,6 +1859,8 @@ function orderRelationEndpoints(order) {
     return {
       kind: "support",
       from: parts[1],
+      supportUnit: parts[supportIndex + 1],
+      supportFrom: parts[supportIndex + 2],
       to: moveIndex > -1 ? parts[moveIndex + 1] : parts[supportIndex + 2],
     };
   }

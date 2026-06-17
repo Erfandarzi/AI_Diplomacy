@@ -458,6 +458,20 @@ h2 {
   animation: plannedArrowFlow 900ms linear infinite;
 }
 
+.move-arrow-support-link {
+  stroke-width: 2.4;
+  stroke-dasharray: 4 7;
+  opacity: 0.7;
+}
+
+.move-arrow-support-attack {
+  stroke: oklch(48% 0.17 138);
+  stroke-width: 4.7;
+  stroke-dasharray: 11 6;
+  opacity: 0.95;
+  animation: plannedArrowFlow 680ms linear infinite;
+}
+
 .move-arrow-convoy {
   stroke: oklch(42% 0.1 216);
   stroke-width: 2.8;
@@ -485,6 +499,13 @@ h2 {
 
 .move-arrow-flow-support {
   stroke: oklch(72% 0.13 94);
+}
+
+.move-arrow-flow-support-attack {
+  stroke: oklch(76% 0.16 138);
+  stroke-width: 6.7;
+  stroke-dasharray: 0.1 15;
+  animation-duration: 620ms;
 }
 
 .move-arrow-flow-convoy {
@@ -559,6 +580,10 @@ h2 {
 
 #arrow-support path {
   fill: oklch(42% 0.12 94);
+}
+
+#arrow-support-attack path {
+  fill: oklch(48% 0.17 138);
 }
 
 #arrow-convoy path {
@@ -2068,6 +2093,7 @@ h2 {
 @media (prefers-reduced-motion: reduce) {
   .move-arrow-own,
   .move-arrow-support,
+  .move-arrow-support-attack,
   .move-arrow-convoy,
   .move-arrow-flow,
   .move-endpoint-target circle,
