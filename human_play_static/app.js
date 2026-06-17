@@ -54,6 +54,7 @@ let pendingActionChoices = null;
 let hoveredActionChoices = null;
 const orderModeByLocation = new Map();
 let orderDrag = null;
+let hiddenMapModeMenuLocation = null;
 
 const el = (id) => document.getElementById(id);
 
@@ -131,6 +132,12 @@ async function refresh() {
 function render() {
   if (!gameState) return;
   syncDraftOrdersForPhase();
+  if (!canEnterOrders()) {
+    selectedOrderLocation = null;
+    pendingActionChoices = null;
+    hoveredActionChoices = null;
+    hiddenMapModeMenuLocation = null;
+  }
   if (selectedOrderLocation && !(gameState.orderableLocations || []).includes(selectedOrderLocation)) {
     selectedOrderLocation = null;
     pendingActionChoices = null;
@@ -169,6 +176,7 @@ function syncDraftOrdersForPhase() {
     pendingActionChoices = null;
     hoveredActionChoices = null;
     orderModeByLocation.clear();
+    hiddenMapModeMenuLocation = null;
   }
   const reservedLocations = new Set();
   for (const order of gameState.pendingHumanOrders || []) {
@@ -220,6 +228,14 @@ function currentStatusText() {
 
 function isBusy() {
   return Boolean(gameState?.busy || pendingResolve);
+}
+
+function canEnterOrders() {
+  return Boolean(gameState && !isBusy() && !gameState.isGameDone && !isReviewingBoard());
+}
+
+function waitingForAiText() {
+  return "AI players are moving. The board will update when every country finishes.";
 }
 
 function renderAiStatus() {
@@ -341,7 +357,7 @@ function renderMap() {
     `;
     if (!isReviewingBoard() && unit.power === gameState.humanPower) {
       token.classList.add("human-unit");
-      const canOrder = (gameState.orderableLocations || []).includes(unit.location);
+      const canOrder = canEnterOrders() && (gameState.orderableLocations || []).includes(unit.location);
       if (canOrder) token.classList.add("selectable-unit");
       if (selectedOrderLocation === unit.location) token.classList.add("selected-unit");
       token.addEventListener("pointerdown", (event) => {
@@ -359,6 +375,10 @@ function renderMap() {
 
 function handleUnitTokenClick(unit, canOrder) {
   if (Date.now() < suppressMapClickUntil) return;
+  if (!canEnterOrders()) {
+    if (isBusy()) showToast(waitingForAiText());
+    return;
+  }
   if (selectedOrderLocation && selectedOrderLocation !== unit.location) {
     const code = provinceBaseCode(unit.location);
     const supportMatches = supportOriginActionsForCode(selectedOrderLocation, code);
@@ -401,7 +421,7 @@ function handleUnitTokenClick(unit, canOrder) {
 }
 
 function handleUnitTokenPointerDown(event, unit, canOrder) {
-  if (!canOrder || isReviewingBoard() || event.button !== 0) return;
+  if (!canOrder || !canEnterOrders() || event.button !== 0) return;
   event.stopPropagation();
   const start = {
     id: event.pointerId,
@@ -475,7 +495,7 @@ function provinceCodeFromPoint(x, y) {
 }
 
 function chooseDroppedOrder(location, code) {
-  if (!location || !code) return;
+  if (!canEnterOrders() || !location || !code) return;
   selectedOrderLocation = location;
   pendingActionChoices = null;
   hoveredActionChoices = null;
@@ -595,7 +615,7 @@ function handleMapPathClick(path) {
 }
 
 function handleMapPathHover(path) {
-  if (isReviewingBoard() || !selectedOrderLocation || pendingActionChoices || panStart) return;
+  if (!canEnterOrders() || !selectedOrderLocation || pendingActionChoices || panStart) return;
   const code = mapProvinceCode(path?.id);
   if (!code) {
     clearMapHover();
@@ -701,7 +721,7 @@ function highlightMapOrderTargets(board = activeBoardState()) {
       "convoy-target-province",
     );
   }
-  if (isReviewingBoard()) return;
+  if (isReviewingBoard() || isBusy()) return;
   const orderableBases = new Set((gameState.orderableLocations || []).map(provinceBaseCode));
   for (const path of svg.querySelectorAll("#MapLayer path[id^='_']")) {
     const code = mapProvinceCode(path.id);
@@ -754,9 +774,14 @@ function plannedOrderCodes() {
 }
 
 function selectOrderLocation(location, options = {}) {
+  if (!canEnterOrders()) {
+    if (isBusy()) showToast(waitingForAiText());
+    return;
+  }
   selectedOrderLocation = options.force ? location : selectedOrderLocation === location ? null : location;
   pendingActionChoices = null;
   hoveredActionChoices = null;
+  hiddenMapModeMenuLocation = null;
   if (selectedOrderLocation) ensureOrderMode(selectedOrderLocation);
   updateOrderHint();
   renderMapActionTray();
@@ -770,6 +795,7 @@ function cancelOrderSelection(message = "Selection cancelled.") {
   selectedOrderLocation = null;
   pendingActionChoices = null;
   hoveredActionChoices = null;
+  hiddenMapModeMenuLocation = null;
   updateOrderHint();
   renderMapActionTray();
   renderMap();
@@ -780,6 +806,10 @@ function cancelOrderSelection(message = "Selection cancelled.") {
 
 function handleProvinceClick(code) {
   if (!gameState) return;
+  if (!canEnterOrders()) {
+    if (isBusy()) showToast(waitingForAiText());
+    return;
+  }
   const orderableLocation = (gameState.orderableLocations || []).find(
     (loc) => provinceBaseCode(loc) === code,
   );
@@ -927,8 +957,12 @@ function clearOrder(location) {
 function updateOrderHint() {
   const hint = el("orderModeHint");
   if (!hint) return;
+  if (isBusy()) {
+    hint.textContent = waitingForAiText();
+    return;
+  }
   if (!(gameState.orderableLocations || []).length) {
-    hint.textContent = noOrderReason();
+    hint.textContent = "No choices this phase. Continue when ready.";
     return;
   }
   if (!selectedOrderLocation) {
@@ -970,9 +1004,8 @@ function renderTurnStatus() {
   if (!orderable.length || !required) {
     card.className = "turn-status-card waiting no-action";
     card.innerHTML = `
-      <strong>Nothing to choose</strong>
-      <span>${escapeHtml(noOrderReason())}</span>
-      <span>The orders below are only the last turn report. Press Continue to advance.</span>
+      <strong>No ${escapeHtml(human)} choices</strong>
+      <span>${escapeHtml(noOrderReason())} Continue to advance.</span>
     `;
     return;
   }
@@ -1164,11 +1197,16 @@ function renderTurnProgress() {
   const progress = el("turnProgress");
   const list = el("plannedOrdersList");
   if (!progress || !list) return;
+  if (isBusy()) {
+    progress.innerHTML = `<span>Waiting for AI powers.</span>`;
+    list.innerHTML = "";
+    return;
+  }
   const rows = orderPlanRows();
   const needed = requiredOrderCount();
   const selectedCount = selectedOrderCount();
   if (!(gameState.orderableLocations || []).length || !needed) {
-    progress.innerHTML = `<span>No choices needed now.</span>`;
+    progress.innerHTML = "";
     list.innerHTML = "";
     return;
   }
@@ -1289,6 +1327,10 @@ function renderMapActionTray() {
   if (!tray) return;
   tray.innerHTML = "";
   if (!gameState) return;
+  if (isBusy()) {
+    tray.innerHTML = `<span class="tray-note">${escapeHtml(waitingForAiText())}</span>`;
+    return;
+  }
 
   if (!selectedOrderLocation) {
     if (!(gameState.orderableLocations || []).length) return;
@@ -1344,6 +1386,7 @@ function renderMapActionTray() {
       orderModeByLocation.set(selectedOrderLocation, button.dataset.orderMode);
       pendingActionChoices = null;
       hoveredActionChoices = null;
+      hiddenMapModeMenuLocation = selectedOrderLocation;
       renderMapActionTray();
       renderMap();
     });
@@ -1611,6 +1654,7 @@ function renderMapActionMenu(overlay, prompt = pendingActionChoices) {
 
 function renderMapModeMenu(overlay) {
   if (!selectedOrderLocation || pendingActionChoices || hoveredActionChoices) return;
+  if (hiddenMapModeMenuLocation === selectedOrderLocation) return;
   const coord = coordinateForLocation(selectedOrderLocation);
   if (!coord) return;
   const actions = orderActionsForLocation(selectedOrderLocation);
@@ -1639,6 +1683,7 @@ function renderMapModeMenu(overlay) {
       orderModeByLocation.set(selectedOrderLocation, entry.mode);
       pendingActionChoices = null;
       hoveredActionChoices = null;
+      hiddenMapModeMenuLocation = selectedOrderLocation;
       renderMapActionTray();
       renderMap();
       showToast(`${entry.label} mode.`);
@@ -2328,6 +2373,10 @@ function coordinateForLocation(location) {
 function renderOrders() {
   const container = el("ordersList");
   container.innerHTML = "";
+  if (isBusy()) {
+    container.innerHTML = `<div class="empty-note">${escapeHtml(waitingForAiText())}</div>`;
+    return;
+  }
   const locations = gameState.orderableLocations || [];
   if (!locations.length) {
     container.innerHTML = `<div class="empty-note">No moves needed for ${powerLabel(gameState.humanPower)} right now.</div>`;

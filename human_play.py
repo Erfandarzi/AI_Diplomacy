@@ -641,6 +641,10 @@ class HumanGameSession:
 
         if not any(possible_orders.values()):
             lines.append(f"{power_name} has no legal orders needed this phase.")
+        lines.append(
+            "Support legality reminder: a unit can support only into a province that unit could enter itself; "
+            "adjacency to the attacking unit is not enough."
+        )
         return "\n".join(lines)
 
     def _brief_items(self, items: Any, max_items: int = 12, separator: str = ", ") -> str:
@@ -711,6 +715,28 @@ class HumanGameSession:
         supported_loc = self._base_code(parts[support_index + 2])
         target_loc = self._base_code(parts[move_index + 1]) if move_index > -1 and move_index + 1 < len(parts) else supported_loc
         return {"supported_loc": supported_loc, "target_loc": target_loc}
+
+    def _unit_at_location(self, units: dict[str, list[str]], location: str | None) -> tuple[str, str, str] | None:
+        target = self._base_code(location)
+        if not target:
+            return None
+        for power_name, unit_list in (units or {}).items():
+            for unit in unit_list or []:
+                parts = str(unit or "").replace("*", "").split()
+                if len(parts) >= 2 and self._base_code(parts[1]) == target:
+                    return power_name, parts[0].upper(), parts[1].upper()
+        return None
+
+    def _unit_for_power_at_location(
+        self,
+        units: dict[str, list[str]],
+        power_name: str,
+        location: str | None,
+    ) -> tuple[str, str] | None:
+        found = self._unit_at_location(units, location)
+        if found and found[0] == power_name:
+            return found[1], found[2]
+        return None
 
     def _private_messages_with_power(self, other_power: str, limit: int = 10) -> list[tuple[str, str, str]]:
         messages: list[tuple[str, str, str]] = []
@@ -1336,6 +1362,151 @@ class HumanGameSession:
             "Let's talk from that position."
         )
 
+    def _flat_possible_orders(self, possible_orders: dict[str, list[str]]) -> set[str]:
+        return {str(order).upper() for choices in (possible_orders or {}).values() for order in choices or []}
+
+    def _support_claims_from_reply(self, content: str | None) -> list[dict[str, str]]:
+        if not content:
+            return []
+        text = re.sub(r"\s+", " ", str(content).upper())
+        province = r"[A-Z]{3}(?:/[A-Z]{2})?"
+        claims: list[dict[str, str]] = []
+
+        def add_claim(
+            support_loc: str,
+            target_loc: str,
+            supported_loc: str = "",
+            support_type: str = "",
+            supported_type: str = "",
+            raw: str = "",
+        ) -> None:
+            claim = {
+                "support_loc": self._base_code(support_loc),
+                "target_loc": self._base_code(target_loc),
+                "supported_loc": self._base_code(supported_loc),
+                "support_type": support_type.upper(),
+                "supported_type": supported_type.upper(),
+                "raw": raw.strip(),
+            }
+            if claim["support_loc"] and claim["target_loc"]:
+                claims.append(claim)
+
+        for match in re.finditer(
+            rf"\b([AF])\s+({province})\s+S\s+([AF])\s+({province})(?:\s*-\s*({province}))?",
+            text,
+        ):
+            add_claim(
+                match.group(2),
+                match.group(5) or match.group(4),
+                match.group(4),
+                match.group(1),
+                match.group(3),
+                match.group(0),
+            )
+
+        for match in re.finditer(
+            rf"\b([AF])\s+({province})\s+(?:CAN|COULD|WILL|WOULD|MAY)?\s*SUPPORT\b[^.?!;]{{0,120}}?\b(?:TO|INTO)\s+({province})\b[^.?!;]{{0,80}}?\bFROM\s+({province})\b",
+            text,
+        ):
+            add_claim(match.group(2), match.group(3), match.group(4), match.group(1), raw=match.group(0))
+
+        for match in re.finditer(
+            rf"\bSUPPORT(?:S|ING)?\s+(?:YOUR\s+|THE\s+)?([AF])?\s*({province})\b[^.?!;]{{0,100}}?\b(?:TO|INTO)\s+({province})\b[^.?!;]{{0,80}}?\bFROM\s+({province})\b",
+            text,
+        ):
+            add_claim(match.group(4), match.group(3), match.group(2), supported_type=match.group(1) or "", raw=match.group(0))
+
+        for match in re.finditer(
+            rf"\bFROM\s+({province})\b[^.?!;]{{0,80}}?\bSUPPORT(?:S|ING)?\b[^.?!;]{{0,100}}?\b(?:TO|INTO)\s+({province})\b",
+            text,
+        ):
+            add_claim(match.group(1), match.group(2), raw=match.group(0))
+
+        deduped: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for claim in claims:
+            key = (
+                claim["support_loc"],
+                claim["target_loc"],
+                claim.get("supported_loc", ""),
+                claim.get("raw", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(claim)
+        return deduped
+
+    def _reply_tactical_legality_conflict(
+        self,
+        content: str | None,
+        power_name: str,
+        possible_orders: dict[str, list[str]],
+        board_state: dict[str, Any],
+    ) -> str | None:
+        if not content:
+            return None
+        units = board_state.get("units", {}) if isinstance(board_state, dict) else {}
+        legal_orders = self._flat_possible_orders(possible_orders)
+        conflicts: list[tuple[tuple[str, str], str]] = []
+        valid_pairs: set[tuple[str, str]] = set()
+
+        for claim in self._support_claims_from_reply(content):
+            support_loc = claim["support_loc"]
+            target_loc = claim["target_loc"]
+            claim_pair = (claim.get("supported_loc") or "", target_loc)
+            support_unit = self._unit_for_power_at_location(units, power_name, support_loc)
+            if not support_unit:
+                conflicts.append((claim_pair, f"{power_name} has no current unit at {support_loc} to give that support."))
+                continue
+            support_type, support_full_loc = support_unit
+            supported_loc = claim.get("supported_loc") or ""
+            supported = self._unit_at_location(units, supported_loc) if supported_loc else None
+            supported_type = claim.get("supported_type") or (supported[1] if supported else "A")
+            support_order = (
+                f"{support_type} {support_full_loc} S {supported_type} {supported_loc} - {target_loc}"
+                if supported_loc and target_loc != supported_loc
+                else f"{support_type} {support_full_loc} S {supported_type} {supported_loc or target_loc}"
+            ).upper()
+
+            if legal_orders and support_order not in legal_orders:
+                conflicts.append((claim_pair, f"{support_order} is not in {power_name}'s current legal-order list."))
+                continue
+            if not self.game.map.abuts(support_type, support_full_loc, "S", target_loc):
+                conflicts.append(
+                    (
+                        claim_pair,
+                        f"{support_type} {support_full_loc} cannot support into {target_loc}; "
+                        "a supporting unit must be able to move to the destination being attacked or held.",
+                    )
+                )
+                continue
+            valid_pairs.add(claim_pair)
+        for claim_pair, conflict in conflicts:
+            if claim_pair not in valid_pairs:
+                return conflict
+        return None
+
+    def _tactical_conflict_reply_fallback(
+        self,
+        power_name: str,
+        conflict: str,
+    ) -> str:
+        phase_kind = {
+            "M": "movement",
+            "R": "retreat",
+            "A": "adjustment",
+        }.get(self.game.phase_type, self.game.phase_type)
+        phase_note = (
+            f"This is a {phase_kind} phase, so I should not promise an immediate support order. "
+            if self.game.phase_type != "M"
+            else ""
+        )
+        return (
+            f"You're right to question that. {conflict} {phase_note}"
+            "Let's coordinate from legal adjacent orders next movement phase."
+        )
+
     def _non_repeating_reply_fallback(
         self,
         power_name: str,
@@ -1434,6 +1605,7 @@ class HumanGameSession:
                 "address that explicitly and do not ignore it for generic expansion. "
                 "When promising support, convoy, retreat, build, or movement, copy an exact legal order from the legal-order list or clearly say it is only a future idea. "
                 "Never claim you can order a unit to support itself or issue an order that is not currently legal. "
+                "Support rule: the supporting unit must be able to move to the destination being attacked or held; being adjacent to the attacking unit is not enough. "
                 "Answer the latest human message directly. If they ask for ideas, propose one or two concrete, legal tactical ideas grounded in the current phase and units. "
                 "Do not offer support into a province the human already occupies unless you clearly mean a later-phase plan. "
                 "Keep it under 80 words. Do not repeat your previous reply, even if your strategic condition has not changed; acknowledge the new message and vary the wording. "
@@ -1446,6 +1618,7 @@ class HumanGameSession:
             content: str | None = None
             duplicate_match: str | None = None
             board_conflict: str | None = None
+            tactical_conflict: str | None = None
             try:
                 prompt = raw_prompt
                 for duplicate_attempt in range(2):
@@ -1462,7 +1635,13 @@ class HumanGameSession:
                     content = self._parse_direct_reply(raw_response_part)
                     duplicate_match = self._duplicate_reply_match(content, previous_replies)
                     board_conflict = self._reply_current_board_conflict(content, board_state)
-                    if not content or (not duplicate_match and not board_conflict):
+                    tactical_conflict = self._reply_tactical_legality_conflict(
+                        content,
+                        power_name,
+                        possible_orders,
+                        board_state,
+                    )
+                    if not content or (not duplicate_match and not board_conflict and not tactical_conflict):
                         break
                     if duplicate_attempt == 0:
                         warnings = []
@@ -1476,12 +1655,18 @@ class HumanGameSession:
                                 "Your draft contradicted the authoritative current board: "
                                 f"{board_conflict}"
                             )
+                        if tactical_conflict:
+                            warnings.append(
+                                "Your draft proposed or implied an illegal tactical order: "
+                                f"{tactical_conflict}"
+                            )
                         prompt = (
                             f"{raw_prompt}\n\n"
                             "BACKEND REPLY WARNING:\n"
                             + "\n".join(warnings)
                             + "\nWrite a different response to the latest human message. Current board facts override old chat thread text. "
-                            "If your condition is unchanged, say so in new words and ask for a concrete order trade."
+                            "If your condition is unchanged, say so in new words and ask for a concrete order trade. "
+                            "Do not name a support, move, convoy, build, or retreat unless it is legal from the current board."
                         )
                 if content and duplicate_match:
                     content = self._non_repeating_reply_fallback(
@@ -1498,6 +1683,9 @@ class HumanGameSession:
                         board_conflict,
                     )
                     raw_response_parts.append(f"[backend current-board guard fallback] {content}")
+                if content and tactical_conflict:
+                    content = self._tactical_conflict_reply_fallback(power_name, tactical_conflict)
+                    raw_response_parts.append(f"[backend tactical-order guard fallback] {content}")
             finally:
                 self._restore_client_tokens(agent.client, previous_cap)
             raw_response = "\n\n--- backend direct reply attempt ---\n\n".join(raw_response_parts)
@@ -1666,6 +1854,42 @@ class HumanGameSession:
             with self.lock:
                 self.busy = False
 
+    def _order_is_hold(self, order: str) -> bool:
+        return str(order or "").strip().endswith(" H")
+
+    def _order_is_active_movement(self, order: str) -> bool:
+        padded = f" {str(order or '').strip()} "
+        return (" - " in padded or " S " in padded or " C " in padded) and not padded.strip().endswith((" B", " D"))
+
+    def _too_many_holds(
+        self,
+        orders: list[str],
+        possible_orders: dict[str, list[str]],
+    ) -> bool:
+        if self.game.phase_type != "M" or not possible_orders:
+            return False
+        orderable_count = len(possible_orders)
+        if orderable_count < 3:
+            return False
+        active_capable = sum(
+            1 for choices in possible_orders.values() if any(self._order_is_active_movement(order) for order in choices)
+        )
+        if active_capable < max(2, orderable_count // 2):
+            return False
+        holds = sum(1 for order in orders if self._order_is_hold(order))
+        active_orders = sum(1 for order in orders if self._order_is_active_movement(order))
+        return holds >= max(3, int(orderable_count * 0.67)) and active_orders <= max(1, orderable_count // 4)
+
+    def _active_order_examples(self, possible_orders: dict[str, list[str]], limit: int = 18) -> str:
+        examples: list[str] = []
+        for loc, choices in possible_orders.items():
+            active = [order for order in choices or [] if self._order_is_active_movement(order)]
+            if active:
+                examples.append(f"{loc}: {'; '.join(active[:4])}")
+            if len(examples) >= limit:
+                break
+        return "\n".join(examples) or "(No active movement orders available.)"
+
     async def _generate_ai_orders(
         self,
         power_name: str,
@@ -1699,9 +1923,8 @@ class HumanGameSession:
                 phase,
             )
         else:
-            previous_cap = self._cap_client_tokens(agent.client, self.args.order_max_tokens)
-            try:
-                raw_orders = await agent.client.get_orders(
+            async def request_orders(extra_context: str = "") -> list[str]:
+                return await agent.client.get_orders(
                     game=self.game,
                     board_state=board_state,
                     power_name=power_name,
@@ -1712,8 +1935,12 @@ class HumanGameSession:
                     phase=phase,
                     agent_goals=agent.goals,
                     agent_relationships=agent.relationships,
-                    agent_private_diary_str=order_diary_context,
+                    agent_private_diary_str="\n\n".join(part for part in [order_diary_context, extra_context] if part),
                 )
+
+            previous_cap = self._cap_client_tokens(agent.client, self.args.order_max_tokens)
+            try:
+                raw_orders = await request_orders()
             finally:
                 self._restore_client_tokens(agent.client, previous_cap)
 
@@ -1724,6 +1951,32 @@ class HumanGameSession:
             complete_missing=True,
             allow_adjustment_defaults=True,
         )
+        if not isinstance(agent.client, MockModelClient) and self._too_many_holds(valid, possible_orders):
+            warning = (
+                "BACKEND ORDER WARNING: your previous draft was too passive and used holds for most units despite legal "
+                "moves/supports/convoys. In Diplomacy, idle units usually lose tempo. Revise with active legal orders "
+                "unless a hold directly prevents a concrete loss. Use only exact orders from possible_orders.\n"
+                f"Previous accepted draft: {'; '.join(valid)}\n"
+                f"Examples of active legal choices:\n{self._active_order_examples(possible_orders)}"
+            )
+            previous_cap = self._cap_client_tokens(agent.client, self.args.order_max_tokens)
+            try:
+                revised_raw_orders = await request_orders(warning)
+            finally:
+                self._restore_client_tokens(agent.client, previous_cap)
+            revised_valid, revised_invalid = self._validate_orders(
+                power_name,
+                revised_raw_orders,
+                possible_orders,
+                complete_missing=True,
+                allow_adjustment_defaults=True,
+            )
+            if not self._too_many_holds(revised_valid, possible_orders) or (
+                sum(1 for order in revised_valid if self._order_is_active_movement(order))
+                > sum(1 for order in valid if self._order_is_active_movement(order))
+            ):
+                logger.info("Replaced passive %s orders after backend active-order warning.", power_name)
+                valid, invalid = revised_valid, revised_invalid
         return {"valid": valid, "invalid": invalid}
 
     async def resolve_phase(self, human_orders: list[str] | None = None) -> dict[str, Any]:

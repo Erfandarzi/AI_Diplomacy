@@ -390,13 +390,17 @@ class BaseModelClient:
 
     def fallback_orders(self, possible_orders: Dict[str, List[str]]) -> List[str]:
         """
-        Just picks HOLD if possible, else first option.
+        Pick an active legal order before HOLD so decoding failures do not
+        accidentally turn a power into a passive wall of holds.
         """
         fallback = []
         for loc, orders_list in possible_orders.items():
             if orders_list:
+                moves = [o for o in orders_list if " - " in o and " S " not in o and " C " not in o]
+                supports = [o for o in orders_list if " S " in o]
+                convoys = [o for o in orders_list if " C " in o]
                 holds = [o for o in orders_list if o.endswith("H")]
-                fallback.append(holds[0] if holds else orders_list[0])
+                fallback.append((moves or supports or convoys or holds or orders_list)[0])
         return fallback
 
     def build_planning_prompt(
