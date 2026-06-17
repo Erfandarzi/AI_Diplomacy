@@ -704,6 +704,17 @@ h2 {
   outline-color: oklch(48% 0.16 136);
 }
 
+body.order-dragging .map-frame,
+body.order-dragging .unit-token.selectable-unit {
+  cursor: grabbing;
+}
+
+body.order-dragging .move-target-province,
+body.order-dragging .support-target-province,
+body.order-dragging .convoy-target-province {
+  filter: drop-shadow(0 0 10px oklch(54% 0.16 136 / 48%));
+}
+
 .map-tools,
 .map-legend {
   position: absolute;
@@ -1465,6 +1476,10 @@ h2 {
   transition: background 160ms ease-out, border-color 160ms ease-out;
 }
 
+.order-row-compact {
+  align-items: start;
+}
+
 .order-row-updated {
   border-color: var(--accent);
   background: oklch(90% 0.045 136);
@@ -1524,6 +1539,50 @@ h2 {
 .order-province {
   font-size: 0.84rem;
   font-weight: 800;
+}
+
+.advanced-order-choices {
+  max-height: 116px;
+  display: grid;
+  gap: 4px;
+  overflow: auto;
+  padding: 1px;
+}
+
+.advanced-order-button {
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: oklch(98% 0.01 118);
+  text-align: left;
+}
+
+.advanced-order-button:hover,
+.advanced-order-button.selected {
+  background: oklch(90% 0.045 136);
+}
+
+.advanced-order-button .action-svg {
+  width: 16px;
+  height: 16px;
+  max-width: 16px;
+  max-height: 16px;
+}
+
+.advanced-order-button .action-copy,
+.advanced-order-button .action-head {
+  min-width: 0;
+}
+
+.advanced-order-button .action-head span,
+.advanced-order-button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-location-button small {
@@ -1977,6 +2036,13 @@ h2 {
   color: var(--muted);
   font-size: 0.66rem;
   font-weight: 900;
+}
+
+.map-action-note {
+  color: oklch(34% 0.08 58);
+  font-size: 0.64rem;
+  font-weight: 850;
+  line-height: 1.2;
 }
 
 .map-action-menu-button {

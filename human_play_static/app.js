@@ -53,6 +53,7 @@ const explicitOrderLocations = new Set();
 let pendingActionChoices = null;
 let hoveredActionChoices = null;
 const orderModeByLocation = new Map();
+let orderDrag = null;
 
 const el = (id) => document.getElementById(id);
 
@@ -327,6 +328,8 @@ function renderMap() {
     if (flagCode) {
       token.style.setProperty("--unit-flag-url", `url("/assets/flags/${flagCode}.svg")`);
     }
+    token.dataset.location = unit.location;
+    token.dataset.province = provinceBaseCode(unit.location);
     token.style.setProperty("--stack-x", `${stack.x}px`);
     token.style.setProperty("--stack-y", `${stack.y}px`);
     token.style.left = `${(coord.x / gameState.mapViewBox.width) * 100}%`;
@@ -341,6 +344,9 @@ function renderMap() {
       const canOrder = (gameState.orderableLocations || []).includes(unit.location);
       if (canOrder) token.classList.add("selectable-unit");
       if (selectedOrderLocation === unit.location) token.classList.add("selected-unit");
+      token.addEventListener("pointerdown", (event) => {
+        handleUnitTokenPointerDown(event, unit, canOrder);
+      });
       token.addEventListener("click", (event) => {
         event.stopPropagation();
         handleUnitTokenClick(unit, canOrder);
@@ -355,6 +361,17 @@ function handleUnitTokenClick(unit, canOrder) {
   if (Date.now() < suppressMapClickUntil) return;
   if (selectedOrderLocation && selectedOrderLocation !== unit.location) {
     const code = provinceBaseCode(unit.location);
+    const supportMatches = supportOriginActionsForCode(selectedOrderLocation, code);
+    if (supportMatches.length) {
+      orderModeByLocation.set(selectedOrderLocation, "support");
+      chooseActionOrAsk(
+        selectedOrderLocation,
+        code,
+        sortActionsForMode(supportMatches, "support"),
+        { activeMode: "support", forceMenu: true, note: supportContextNote(selectedOrderLocation, code, supportMatches) },
+      );
+      return;
+    }
     const activeMode = ensureOrderMode(selectedOrderLocation);
     const activeMatches = activeModeActionsForCode(selectedOrderLocation, code);
     if (activeMatches.length) {
@@ -381,6 +398,128 @@ function handleUnitTokenClick(unit, canOrder) {
   } else {
     showToast(noOrderReason());
   }
+}
+
+function handleUnitTokenPointerDown(event, unit, canOrder) {
+  if (!canOrder || isReviewingBoard() || event.button !== 0) return;
+  event.stopPropagation();
+  const start = {
+    id: event.pointerId,
+    location: unit.location,
+    x: event.clientX,
+    y: event.clientY,
+    active: false,
+  };
+  orderDrag = start;
+
+  const clearDrag = () => {
+    document.removeEventListener("pointermove", handleMove);
+    document.removeEventListener("pointerup", handleUp);
+    document.removeEventListener("pointercancel", handleCancel);
+    document.body.classList.remove("order-dragging");
+    orderDrag = null;
+  };
+
+  const handleMove = (moveEvent) => {
+    if (!orderDrag || moveEvent.pointerId !== start.id) return;
+    const dx = moveEvent.clientX - start.x;
+    const dy = moveEvent.clientY - start.y;
+    if (!orderDrag.active && Math.hypot(dx, dy) > 10) {
+      orderDrag.active = true;
+      document.body.classList.add("order-dragging");
+      if (selectedOrderLocation !== start.location) {
+        selectOrderLocation(start.location, { force: true });
+      }
+    }
+    if (orderDrag.active) moveEvent.preventDefault();
+  };
+
+  const handleUp = (upEvent) => {
+    if (!orderDrag || upEvent.pointerId !== start.id) return;
+    const wasDragging = orderDrag.active;
+    clearDrag();
+    if (!wasDragging) return;
+    suppressMapClickUntil = Date.now() + 300;
+    upEvent.preventDefault();
+    upEvent.stopPropagation();
+    const code = provinceCodeFromPoint(upEvent.clientX, upEvent.clientY);
+    if (code) {
+      chooseDroppedOrder(start.location, code);
+    } else {
+      cancelOrderSelection("Drop on a province to choose an order.");
+    }
+  };
+
+  const handleCancel = (cancelEvent) => {
+    if (!orderDrag || cancelEvent.pointerId !== start.id) return;
+    clearDrag();
+  };
+
+  document.addEventListener("pointermove", handleMove);
+  document.addEventListener("pointerup", handleUp);
+  document.addEventListener("pointercancel", handleCancel);
+}
+
+function provinceCodeFromPoint(x, y) {
+  for (const element of document.elementsFromPoint(x, y)) {
+    if (element.classList?.contains("unit-token") && element.dataset.province) {
+      return provinceBaseCode(element.dataset.province);
+    }
+    const path = element.matches?.("#MapLayer path[id^='_'], #MouseLayer path[id]")
+      ? element
+      : element.closest?.("#MapLayer path[id^='_'], #MouseLayer path[id]");
+    const code = mapProvinceCode(path?.id);
+    if (code) return code;
+  }
+  return "";
+}
+
+function chooseDroppedOrder(location, code) {
+  if (!location || !code) return;
+  selectedOrderLocation = location;
+  pendingActionChoices = null;
+  hoveredActionChoices = null;
+  const activeMode = ensureOrderMode(location);
+  const droppedUnit = unitAtBase(code);
+  const supportMatches = supportOriginActionsForCode(location, code);
+  if (activeMode === "support" && !supportMatches.length) {
+    const note = supportRuleHint(location, code);
+    pendingActionChoices = actionChoicePayload(location, code, [], { note });
+    renderMapActionTray();
+    renderMap();
+    showToast(note);
+    return;
+  }
+  if (supportMatches.length && (activeMode === "support" || droppedUnit?.power === gameState.humanPower)) {
+    orderModeByLocation.set(location, "support");
+    chooseActionOrAsk(location, code, sortActionsForMode(supportMatches, "support"), {
+      activeMode: "support",
+      forceMenu: true,
+      note: supportContextNote(location, code, supportMatches),
+    });
+    return;
+  }
+
+  const activeMatches = activeModeActionsForCode(location, code);
+  if (activeMatches.length) {
+    chooseActionOrAsk(location, code, activeMatches, { activeMode });
+    return;
+  }
+
+  const tacticalMatches = actionsForCode(location, code).filter((action) =>
+    ["support", "convoy", "convoy-move"].includes(action.kind),
+  );
+  if (tacticalMatches.length) {
+    const tacticalMode = actionMode(tacticalMatches[0]);
+    orderModeByLocation.set(location, tacticalMode);
+    chooseActionOrAsk(location, code, sortActionsForMode(tacticalMatches, tacticalMode), {
+      activeMode: tacticalMode,
+      forceMenu: true,
+    });
+    return;
+  }
+
+  handleProvinceClick(provinceBaseCode(code));
 }
 
 function unitStackOffsets(units) {
@@ -462,12 +601,13 @@ function handleMapPathHover(path) {
     clearMapHover();
     return;
   }
-  const actions = activeModeActionsForCode(selectedOrderLocation, code);
-  if (!actions.length) {
+  const context = contextualActionsForCode(selectedOrderLocation, code);
+  const actions = context.actions;
+  if (!actions.length && !context.note) {
     clearMapHover(code);
     return;
   }
-  const next = actionChoicePayload(selectedOrderLocation, code, actions);
+  const next = actionChoicePayload(selectedOrderLocation, code, actions, { note: context.note });
   if (sameActionChoicePayload(hoveredActionChoices, next)) return;
   hoveredActionChoices = next;
   renderMapChoices();
@@ -578,7 +718,11 @@ function highlightMapOrderTargets(board = activeBoardState()) {
   const activeMode = ensureOrderMode(selectedOrderLocation);
   const targetActions = orderActionsForLocation(selectedOrderLocation)
     .filter((action) => actionMode(action) === activeMode);
-  const destinations = new Set(targetActions.flatMap(actionMapCodes).filter(Boolean));
+  const destinations = new Set(
+    targetActions
+      .flatMap((action) => activeMode === "support" ? [supportOriginCode(action)] : actionMapCodes(action))
+      .filter(Boolean),
+  );
   for (const path of svg.querySelectorAll("#MapLayer path[id^='_']")) {
     const code = mapProvinceCode(path.id);
     if (code === selectedBase) path.classList.add("selected-province");
@@ -609,8 +753,8 @@ function plannedOrderCodes() {
   return { origins, targets };
 }
 
-function selectOrderLocation(location) {
-  selectedOrderLocation = selectedOrderLocation === location ? null : location;
+function selectOrderLocation(location, options = {}) {
+  selectedOrderLocation = options.force ? location : selectedOrderLocation === location ? null : location;
   pendingActionChoices = null;
   hoveredActionChoices = null;
   if (selectedOrderLocation) ensureOrderMode(selectedOrderLocation);
@@ -655,6 +799,27 @@ function handleProvinceClick(code) {
   }
 
   const activeMode = ensureOrderMode(selectedOrderLocation);
+  const context = contextualActionsForCode(selectedOrderLocation, code);
+  if (activeMode === "support" && context.note && !context.actions.length) {
+    pendingActionChoices = actionChoicePayload(selectedOrderLocation, code, [], { note: context.note });
+    hoveredActionChoices = null;
+    renderMapActionTray();
+    renderMap();
+    showToast(context.note);
+    return;
+  }
+  const clickedUnit = unitAtBase(code);
+  const supportOriginMatches = supportOriginActionsForCode(selectedOrderLocation, code);
+  if (clickedUnit && supportOriginMatches.length && (activeMode === "support" || clickedUnit.power === gameState.humanPower)) {
+    orderModeByLocation.set(selectedOrderLocation, "support");
+    chooseActionOrAsk(
+      selectedOrderLocation,
+      code,
+      sortActionsForMode(supportOriginMatches, "support"),
+      { activeMode: "support", forceMenu: true, note: supportContextNote(selectedOrderLocation, code, supportOriginMatches) },
+    );
+    return;
+  }
   const activeMatches = activeModeActionsForCode(selectedOrderLocation, code);
   const allMatches = actionsForCode(selectedOrderLocation, code);
   const tacticalMatches = allMatches.filter((action) => ["support", "convoy", "convoy-move"].includes(action.kind));
@@ -710,7 +875,7 @@ function chooseActionOrAsk(location, code, actions, options = {}) {
     setDirectOrder(location, actions[0].order, actions[0]);
     return;
   }
-  pendingActionChoices = actionChoicePayload(location, code, actions);
+  pendingActionChoices = actionChoicePayload(location, code, actions, { note: options.note || "" });
   hoveredActionChoices = null;
   selectedOrderLocation = location;
   renderMapActionTray();
@@ -1398,9 +1563,12 @@ function renderMapActionPreview(overlay, prompt) {
   preview.style.top = `${(prompt.coord.y / gameState.mapViewBox.height) * 100}%`;
   const visibleActions = prompt.actions.slice(0, 3);
   const extra = prompt.actions.length - visibleActions.length;
+  const summary = prompt.actions.length
+    ? `${prompt.actions.length} legal ${prompt.actions.length === 1 ? "order" : "orders"}. Click to choose.`
+    : "No legal support order.";
   preview.innerHTML = `
     <strong>${escapeHtml(provinceName(prompt.code))}</strong>
-    <span>${prompt.actions.length} legal ${prompt.actions.length === 1 ? "order" : "orders"}. Click to choose.</span>
+    <span>${escapeHtml(prompt.note || summary)}</span>
     <div class="map-action-preview-list">
       ${visibleActions.map((action) => `<small>${escapeHtml(action.label)}${action.subtitle ? `: ${escapeHtml(action.subtitle)}` : ""}</small>`).join("")}
       ${extra > 0 ? `<small>+${extra} more</small>` : ""}
@@ -1415,9 +1583,13 @@ function renderMapActionMenu(overlay, prompt = pendingActionChoices) {
   menu.className = "map-action-menu";
   menu.style.left = `${(prompt.coord.x / gameState.mapViewBox.width) * 100}%`;
   menu.style.top = `${(prompt.coord.y / gameState.mapViewBox.height) * 100}%`;
+  const summary = prompt.actions.length
+    ? `${prompt.actions.length} legal ${prompt.actions.length === 1 ? "order" : "orders"}`
+    : "No legal order";
   menu.innerHTML = `
     <strong>${escapeHtml(provinceName(prompt.code))}</strong>
-    <span>${prompt.actions.length} legal ${prompt.actions.length === 1 ? "order" : "orders"}</span>
+    <span>${escapeHtml(summary)}</span>
+    ${prompt.note ? `<small class="map-action-note">${escapeHtml(prompt.note)}</small>` : ""}
   `;
   for (const action of prompt.actions) {
     menu.appendChild(actionButton(action, "map-action-menu-button"));
@@ -1511,11 +1683,12 @@ function actionButton(action, className) {
   return button;
 }
 
-function actionChoicePayload(location, code, actions) {
+function actionChoicePayload(location, code, actions, options = {}) {
   return {
     location,
     code,
     actions,
+    note: options.note || "",
     coord: coordinateForLocation(code) || actions.find((action) => action.coord)?.coord || coordinateForLocation(location),
   };
 }
@@ -1524,12 +1697,58 @@ function sameActionChoicePayload(left, right) {
   if (!left || !right) return false;
   return left.location === right.location &&
     left.code === right.code &&
+    left.note === right.note &&
     left.actions.length === right.actions.length &&
     left.actions.every((action, index) => action.order === right.actions[index]?.order);
 }
 
+function contextualActionsForCode(location, code) {
+  const activeMode = ensureOrderMode(location);
+  if (activeMode === "support") {
+    const supportMatches = supportOriginActionsForCode(location, code);
+    if (supportMatches.length) {
+      return {
+        actions: sortActionsForMode(supportMatches, "support"),
+        note: supportContextNote(location, code, supportMatches),
+      };
+    }
+    const unit = unitAtBase(location);
+    const province = gameState.provinces?.[provinceBaseCode(code)];
+    const note = unit?.type === "Army" && province?.type === "sea" ? supportRuleHint(location, code) : "";
+    return { actions: [], note };
+  }
+  const clickedUnit = unitAtBase(code);
+  const supportMatches = supportOriginActionsForCode(location, code);
+  if (clickedUnit?.power === gameState.humanPower && supportMatches.length) {
+    return {
+      actions: sortActionsForMode(supportMatches, "support"),
+      note: supportContextNote(location, code, supportMatches),
+    };
+  }
+  return { actions: activeModeActionsForCode(location, code), note: "" };
+}
+
+function supportContextNote(location, code, actions) {
+  const unit = unitAtBase(location);
+  const supported = unitAtBase(code);
+  if (unit?.type === "Army" && supported?.type === "Fleet") {
+    const seaAttacks = actions.filter((action) => {
+      const target = actionTargetCode(action);
+      return gameState.provinces?.[provinceBaseCode(target)]?.type === "sea";
+    });
+    if (!seaAttacks.length) {
+      return "Army support is legal here only for fleet hold or attacks into land provinces the army can enter.";
+    }
+  }
+  return "";
+}
+
 function activeModeActionsForCode(location, code) {
   const activeMode = ensureOrderMode(location);
+  if (activeMode === "support") {
+    const originMatches = supportOriginActionsForCode(location, code);
+    if (originMatches.length) return sortActionsForMode(originMatches, "support");
+  }
   return orderActionsForLocation(location).filter(
     (action) => actionMode(action) === activeMode && actionMatchesMapCode(action, code),
   );
@@ -1680,10 +1899,12 @@ function orderAction(location, order) {
       location,
       order,
       kind: "support",
-      label: isMoveSupport ? `Support ${supportPowerLabel}move` : `Support ${supportPowerLabel}hold`,
+      label: isMoveSupport
+        ? `Support ${supportPowerLabel}${supportedUnit} attack`
+        : `Support ${supportPowerLabel}${supportedUnit} hold`,
       icon: "S",
       subtitle: isMoveSupport
-        ? `${supportedLabel} → ${provinceName(parts[moveIndex + 1])}${targetOwnNote ? ` (${targetOwnNote})` : ""}`
+        ? `${provinceName(supportedLoc)} → ${provinceName(parts[moveIndex + 1])}${targetOwnNote ? ` (${targetOwnNote})` : ""}`
         : supportedLabel,
       title: `${describeOrder(order)}${targetOwnNote ? ". This targets a province with your own unit." : ""}`,
       coord: coordinateForLocation(targetLoc),
@@ -1752,13 +1973,25 @@ function actionMatchesMapCode(action, code) {
   return actionMapCodes(action).includes(base);
 }
 
+function supportOriginActionsForCode(location, code) {
+  const base = provinceBaseCode(code);
+  return orderActionsForLocation(location).filter(
+    (action) => action.kind === "support" && supportOriginCode(action) === base,
+  );
+}
+
+function supportOriginCode(action) {
+  if (!action || action.kind !== "support") return "";
+  const parts = String(action.order).trim().split(/\s+/);
+  const supportIndex = parts.indexOf("S");
+  return provinceBaseCode(parts[supportIndex + 2]);
+}
+
 function actionMapCodes(action) {
   if (!action) return [];
   const codes = [actionTargetCode(action)].filter(Boolean);
   if (action.kind === "support") {
-    const parts = String(action.order).trim().split(/\s+/);
-    const supportIndex = parts.indexOf("S");
-    codes.push(provinceBaseCode(parts[supportIndex + 2]));
+    codes.push(supportOriginCode(action));
   }
   if (action.kind === "convoy") {
     const parts = String(action.order).trim().split(/\s+/);
@@ -2113,7 +2346,7 @@ function renderOrders() {
 
   for (const loc of locations) {
     const row = document.createElement("div");
-    row.className = "order-row";
+    row.className = "order-row order-row-compact";
 
     const unit = unitAt(loc);
     const label = document.createElement("div");
@@ -2128,47 +2361,25 @@ function renderOrders() {
     locationButton.addEventListener("click", () => selectOrderLocation(loc));
     label.appendChild(locationButton);
 
-    const select = document.createElement("select");
-    select.dataset.location = loc;
     const choices = gameState.possibleOrders[loc] || [];
-    if (gameState.phaseType !== "M") {
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Choose legal order...";
-      select.appendChild(placeholder);
-    }
-    for (const order of choices) {
-      const option = document.createElement("option");
-      option.value = order;
-      option.textContent = describeOrder(order);
-      option.title = order;
-      select.appendChild(option);
-    }
     const pending = pendingByLoc.get(loc);
     if (pending && !draftOrdersByLocation.has(loc)) {
       draftOrdersByLocation.set(loc, pending);
       explicitOrderLocations.add(loc);
     }
     const selected = draftOrdersByLocation.get(loc) || defaultOrderForLocation(loc);
-    select.value = selected || "";
-    select.addEventListener("change", () => {
-      if (select.value) {
-        const companionResult = stageCompanionOrders(orderAction(loc, select.value));
-        setOrderDraft(loc, select.value);
-        showToast(orderToast(select.value, companionResult));
-      } else {
-        draftOrdersByLocation.delete(loc);
-        explicitOrderLocations.delete(loc);
-      }
-      renderTurnStatus();
-      renderTurnProgress();
-      renderMapActionTray();
-      renderMap();
-      renderOrderArrows();
-      updateButtons();
-    });
+    const choicesPanel = document.createElement("div");
+    choicesPanel.className = "advanced-order-choices";
+    choicesPanel.setAttribute("role", "list");
+    for (const order of choices) {
+      const action = orderAction(loc, order);
+      if (!action) continue;
+      const button = actionButton(action, "advanced-order-button");
+      button.classList.toggle("selected", order === selected);
+      choicesPanel.appendChild(button);
+    }
 
-    row.append(label, select);
+    row.append(label, choicesPanel);
     container.appendChild(row);
   }
 }
