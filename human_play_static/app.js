@@ -343,17 +343,44 @@ function renderMap() {
       if (selectedOrderLocation === unit.location) token.classList.add("selected-unit");
       token.addEventListener("click", (event) => {
         event.stopPropagation();
-        if (Date.now() < suppressMapClickUntil) return;
-        if (canOrder) {
-          selectOrderLocation(unit.location);
-        } else {
-          showToast(noOrderReason());
-        }
+        handleUnitTokenClick(unit, canOrder);
       });
     }
     overlay.appendChild(token);
   }
   renderMapChoices();
+}
+
+function handleUnitTokenClick(unit, canOrder) {
+  if (Date.now() < suppressMapClickUntil) return;
+  if (selectedOrderLocation && selectedOrderLocation !== unit.location) {
+    const code = provinceBaseCode(unit.location);
+    const activeMode = ensureOrderMode(selectedOrderLocation);
+    const activeMatches = activeModeActionsForCode(selectedOrderLocation, code);
+    if (activeMatches.length) {
+      chooseActionOrAsk(selectedOrderLocation, code, activeMatches, { activeMode });
+      return;
+    }
+    const tacticalMatches = actionsForCode(selectedOrderLocation, code).filter((action) =>
+      ["support", "convoy", "convoy-move"].includes(action.kind),
+    );
+    if (tacticalMatches.length) {
+      const tacticalMode = actionMode(tacticalMatches[0]);
+      orderModeByLocation.set(selectedOrderLocation, tacticalMode);
+      chooseActionOrAsk(
+        selectedOrderLocation,
+        code,
+        sortActionsForMode(tacticalMatches, tacticalMode),
+        { activeMode: tacticalMode, forceMenu: true },
+      );
+      return;
+    }
+  }
+  if (canOrder) {
+    selectOrderLocation(unit.location);
+  } else {
+    showToast(noOrderReason());
+  }
 }
 
 function unitStackOffsets(units) {
@@ -551,7 +578,7 @@ function highlightMapOrderTargets(board = activeBoardState()) {
   const activeMode = ensureOrderMode(selectedOrderLocation);
   const targetActions = orderActionsForLocation(selectedOrderLocation)
     .filter((action) => actionMode(action) === activeMode);
-  const destinations = new Set(targetActions.map(actionTargetCode).filter(Boolean));
+  const destinations = new Set(targetActions.flatMap(actionMapCodes).filter(Boolean));
   for (const path of svg.querySelectorAll("#MapLayer path[id^='_']")) {
     const code = mapProvinceCode(path.id);
     if (code === selectedBase) path.classList.add("selected-province");
@@ -630,17 +657,29 @@ function handleProvinceClick(code) {
   const activeMode = ensureOrderMode(selectedOrderLocation);
   const activeMatches = activeModeActionsForCode(selectedOrderLocation, code);
   const allMatches = actionsForCode(selectedOrderLocation, code);
+  const tacticalMatches = allMatches.filter((action) => ["support", "convoy", "convoy-move"].includes(action.kind));
   const localMatches = allMatches.filter((action) => actionMode(action) === "local");
-  if (orderableLocation && orderableLocation !== selectedOrderLocation && !activeMatches.length) {
+  if (
+    orderableLocation &&
+    orderableLocation !== selectedOrderLocation &&
+    !activeMatches.length &&
+    !tacticalMatches.length
+  ) {
     selectOrderLocation(orderableLocation);
     return;
   }
 
-  const matchingActions = activeMatches.length
-    ? sortActionsForMode(allMatches, activeMode)
-    : activeMode === "local"
-      ? localMatches
-      : [];
+  let modeForChoice = activeMode;
+  let matchingActions = [];
+  if (activeMatches.length) {
+    matchingActions = sortActionsForMode(allMatches, activeMode);
+  } else if (tacticalMatches.length) {
+    modeForChoice = actionMode(tacticalMatches[0]);
+    orderModeByLocation.set(selectedOrderLocation, modeForChoice);
+    matchingActions = sortActionsForMode(tacticalMatches, modeForChoice);
+  } else if (activeMode === "local") {
+    matchingActions = localMatches;
+  }
   if (!matchingActions.length) {
     if (allMatches.length) {
       const mode = actionMode(allMatches[0]);
@@ -658,7 +697,7 @@ function handleProvinceClick(code) {
     cancelOrderSelection(`${provinceName(code)} is not legal for ${provinceName(selectedOrderLocation)}. Selection cancelled.`);
     return;
   }
-  chooseActionOrAsk(selectedOrderLocation, code, matchingActions, { activeMode });
+  chooseActionOrAsk(selectedOrderLocation, code, matchingActions, { activeMode: modeForChoice });
 }
 
 function chooseActionOrAsk(location, code, actions, options = {}) {
@@ -1710,18 +1749,23 @@ function actionTargetCode(action) {
 
 function actionMatchesMapCode(action, code) {
   const base = provinceBaseCode(code);
-  if (actionTargetCode(action) === base) return true;
+  return actionMapCodes(action).includes(base);
+}
+
+function actionMapCodes(action) {
+  if (!action) return [];
+  const codes = [actionTargetCode(action)].filter(Boolean);
   if (action.kind === "support") {
     const parts = String(action.order).trim().split(/\s+/);
     const supportIndex = parts.indexOf("S");
-    return provinceBaseCode(parts[supportIndex + 2]) === base;
+    codes.push(provinceBaseCode(parts[supportIndex + 2]));
   }
   if (action.kind === "convoy") {
     const parts = String(action.order).trim().split(/\s+/);
     const convoyIndex = parts.indexOf("C");
-    return provinceBaseCode(parts[convoyIndex + 2]) === base;
+    codes.push(provinceBaseCode(parts[convoyIndex + 2]));
   }
-  return false;
+  return [...new Set(codes.filter(Boolean))];
 }
 
 function setOrderDraft(location, order) {
