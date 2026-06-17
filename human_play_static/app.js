@@ -235,6 +235,10 @@ function canEnterOrders() {
   return Boolean(gameState && !isBusy() && !gameState.isGameDone && !isReviewingBoard());
 }
 
+function isTargetingModeActive(location = selectedOrderLocation) {
+  return Boolean(location && hiddenMapModeMenuLocation === location);
+}
+
 function waitingForAiText() {
   return "AI players are moving. The board will update when every country finishes.";
 }
@@ -381,6 +385,14 @@ function handleUnitTokenClick(unit, canOrder) {
     return;
   }
   if (selectedOrderLocation && selectedOrderLocation !== unit.location) {
+    if (!isTargetingModeActive()) {
+      if (canOrder) {
+        selectOrderLocation(unit.location);
+      } else {
+        showToast("Choose Move, Support, Convoy, or Local first.");
+      }
+      return;
+    }
     const code = provinceBaseCode(unit.location);
     const supportMatches = supportOriginActionsForCode(selectedOrderLocation, code);
     if (supportMatches.length) {
@@ -616,7 +628,7 @@ function handleMapPathClick(path) {
 }
 
 function handleMapPathHover(path) {
-  if (!canEnterOrders() || !selectedOrderLocation || pendingActionChoices || panStart) return;
+  if (!canEnterOrders() || !selectedOrderLocation || !isTargetingModeActive() || pendingActionChoices || panStart) return;
   cancelMapHoverClear();
   const code = mapProvinceCode(path?.id);
   if (!code) {
@@ -763,6 +775,10 @@ function highlightMapOrderTargets(board = activeBoardState()) {
   for (const path of svg.querySelectorAll("#MapLayer path[id^='_']")) {
     const code = mapProvinceCode(path.id);
     if (code === selectedBase) path.classList.add("selected-province");
+  }
+  if (!isTargetingModeActive()) return;
+  for (const path of svg.querySelectorAll("#MapLayer path[id^='_']")) {
+    const code = mapProvinceCode(path.id);
     if (destinations.has(code)) {
       path.classList.add("move-target-province");
       if (activeMode === "support") path.classList.add("support-target-province");
@@ -842,6 +858,15 @@ function handleProvinceClick(code) {
         provinceBaseCode(unit.location) === code,
     );
     if (ownUnit) selectOrderLocation(ownUnit.location);
+    return;
+  }
+
+  if (!isTargetingModeActive()) {
+    if (orderableLocation && orderableLocation !== selectedOrderLocation) {
+      selectOrderLocation(orderableLocation);
+      return;
+    }
+    showToast("Choose Move, Support, Convoy, or Local first.");
     return;
   }
 
@@ -994,8 +1019,12 @@ function updateOrderHint() {
   const actions = orderActionsForLocation(selectedOrderLocation);
   const mapActions = actions.filter((action) => action.coord);
   const tacticalActions = actions.filter((action) => ["support", "convoy"].includes(action.kind));
+  if (!isTargetingModeActive()) {
+    hint.textContent = `${provinceName(selectedOrderLocation)} selected. Choose Move, Support, Convoy, or Local.`;
+    return;
+  }
   hint.textContent = mapActions.length || tacticalActions.length
-    ? `${provinceName(selectedOrderLocation)} selected. Pick a mode, hover targets, then click a province to choose.`
+    ? `${provinceName(selectedOrderLocation)} selected. Click a highlighted target. Hover to preview exact orders.`
     : `${provinceName(selectedOrderLocation)} selected. Choose a legal order.`;
 }
 
@@ -1400,12 +1429,7 @@ function renderMapActionTray() {
   `;
   for (const button of tray.querySelectorAll("[data-order-mode]")) {
     button.addEventListener("click", () => {
-      orderModeByLocation.set(selectedOrderLocation, button.dataset.orderMode);
-      pendingActionChoices = null;
-      hoveredActionChoices = null;
-      hiddenMapModeMenuLocation = selectedOrderLocation;
-      renderMapActionTray();
-      renderMap();
+      beginTargetingMode(button.dataset.orderMode, button.textContent.trim().replace(/\d+$/, "").trim());
     });
   }
   if (gameState.phaseType === "A" && !selectedOrder) {
@@ -1501,6 +1525,7 @@ function appendActionGroup(container, title, actions, className) {
 function trayGuidance(actions, activeMode = null) {
   if (gameState.phaseType === "A") return adjustmentHelpText();
   if (gameState.phaseType === "R") return "Retreat or disband this unit.";
+  if (!isTargetingModeActive()) return "Choose an order type first. Targets appear after you choose a mode.";
   if (activeMode === "support") {
     return "Support is optional. A unit can support an action into a province it could enter, so armies can support fleets into coastal land but not into sea.";
   }
@@ -1553,6 +1578,11 @@ function renderMapChoices() {
     return;
   }
 
+  if (!isTargetingModeActive()) {
+    renderMapModeMenu(overlay);
+    return;
+  }
+
   const hoverPrompt = hoveredActionChoices?.location === selectedOrderLocation ? hoveredActionChoices : null;
   if (hoverPrompt) {
     renderMapActionPreview(overlay, hoverPrompt);
@@ -1560,6 +1590,35 @@ function renderMapChoices() {
   }
 
   renderMapModeMenu(overlay);
+}
+
+function beginTargetingMode(mode, label = "") {
+  if (!selectedOrderLocation) return;
+  orderModeByLocation.set(selectedOrderLocation, mode);
+  pendingActionChoices = null;
+  hoveredActionChoices = null;
+  hiddenMapModeMenuLocation = selectedOrderLocation;
+  const modeActions = sortActionsForMode(
+    orderActionsForLocation(selectedOrderLocation).filter((action) => actionMode(action) === mode),
+    mode,
+  );
+  const hasMapTargets = modeActions.some((action) => action.coord || actionMapCodes(action).length);
+  if (!hasMapTargets) {
+    pendingActionChoices = actionChoicePayload(
+      selectedOrderLocation,
+      provinceBaseCode(selectedOrderLocation),
+      modeActions,
+      { note: "" },
+    );
+    renderMapActionTray();
+    renderMap();
+    showToast(`${label || kindLabel(mode)}: choose the exact order.`);
+    return;
+  }
+  renderMapActionTray();
+  renderMap();
+  const modeLabel = label || kindLabel(mode);
+  showToast(`${modeLabel}: choose a highlighted target.`);
 }
 
 function renderRecentOutcomeBadges(overlay) {
@@ -1710,13 +1769,7 @@ function renderMapModeMenu(overlay) {
     `;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      orderModeByLocation.set(selectedOrderLocation, entry.mode);
-      pendingActionChoices = null;
-      hoveredActionChoices = null;
-      hiddenMapModeMenuLocation = selectedOrderLocation;
-      renderMapActionTray();
-      renderMap();
-      showToast(`${entry.label} mode.`);
+      beginTargetingMode(entry.mode, entry.label);
     });
     menu.appendChild(button);
   }

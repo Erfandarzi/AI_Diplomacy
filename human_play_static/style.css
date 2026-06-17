@@ -362,6 +362,7 @@ h2 {
   fill-opacity: 0.28 !important;
   stroke: oklch(45% 0.14 136) !important;
   stroke-width: 3 !important;
+  animation: targetProvincePulse 1250ms cubic-bezier(0.25, 1, 0.5, 1) infinite;
 }
 
 .support-target-province {
@@ -374,6 +375,17 @@ h2 {
   fill: oklch(82% 0.065 216) !important;
   fill-opacity: 0.36 !important;
   stroke: oklch(42% 0.1 216) !important;
+}
+
+@keyframes targetProvincePulse {
+  0%, 100% {
+    filter: saturate(1.06) brightness(1);
+    stroke-opacity: 0.72;
+  }
+  50% {
+    filter: saturate(1.22) brightness(1.08) drop-shadow(0 0 5px oklch(62% 0.16 136 / 42%));
+    stroke-opacity: 1;
+  }
 }
 
 .orderable-province {
@@ -2266,6 +2278,9 @@ body.order-dragging .convoy-target-province {
   .move-arrow-convoy,
   .move-arrow-flow,
   .move-endpoint-target circle,
+  .move-target-province,
+  .support-target-province,
+  .convoy-target-province,
   .move-outcome-badge.victory,
   .unit-token.dislodged,
   .map-action-menu-button .action-svg,
