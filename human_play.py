@@ -648,6 +648,10 @@ class HumanGameSession:
             "Support legality reminder: a unit can support only into a province that unit could enter itself; "
             "adjacency to the attacking unit is not enough."
         )
+        lines.append(
+            "Convoy legality reminder: a fleet convoy promise must match an exact legal order like "
+            "'F NTH C A DEN - YOR'; the army move must be ordered separately as 'A DEN - YOR VIA'."
+        )
         return "\n".join(lines)
 
     def _brief_items(self, items: Any, max_items: int = 12, separator: str = ", ") -> str:
@@ -1512,6 +1516,88 @@ class HumanGameSession:
                 )
         return denials
 
+    def _convoy_claims_from_reply(self, content: str | None) -> list[dict[str, Any]]:
+        if not content:
+            return []
+        province = r"[A-Z]{3}(?:/[A-Z]{2})?"
+        claims: list[dict[str, Any]] = []
+
+        def is_human_request(sentence: str, start: int) -> bool:
+            prefix = sentence[max(0, start - 90) : start]
+            return bool(
+                re.search(
+                    r"\b(?:PLEASE\s+ORDER|YOU\s+ORDER|IF\s+YOU\s+ORDER|CONFIRM\s+YOU\s+WILL\s+ORDER|NEED\s+YOU\s+TO\s+ORDER|YOUR\s+F)\b",
+                    prefix,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+        def add_claim(sentence: str, match: re.Match[str], convoy_loc: str, army_loc: str, target_loc: str) -> None:
+            claim = {
+                "convoy_loc": self._base_code(convoy_loc),
+                "army_loc": self._base_code(army_loc),
+                "target_loc": self._base_code(target_loc),
+                "request_to_human": is_human_request(sentence, match.start()),
+                "raw": match.group(0).strip(),
+            }
+            if claim["convoy_loc"] and claim["army_loc"] and claim["target_loc"]:
+                claims.append(claim)
+
+        for sentence in re.split(r"(?<=[.?!;])\s+", str(content or "").upper()):
+            normalized = re.sub(r"\s+", " ", sentence.strip())
+            for match in re.finditer(
+                rf"\bF\s+({province})\s+C\s+A\s+({province})\s*(?:-|TO|INTO)\s*({province})\b",
+                normalized,
+            ):
+                add_claim(normalized, match, match.group(1), match.group(2), match.group(3))
+
+            for match in re.finditer(
+                rf"\bF(?:LEET)?\s+({province})\b[^.?!;]{{0,80}}?\bCONVOY(?:S|ING)?\b"
+                rf"[^.?!;]{{0,80}}?\bA(?:RMY)?\s+({province})\b[^.?!;]{{0,60}}?\b(?:TO|INTO|-)\s+({province})\b",
+                normalized,
+            ):
+                add_claim(normalized, match, match.group(1), match.group(2), match.group(3))
+
+            for match in re.finditer(
+                rf"\bCONVOY(?:S|ING)?\s+A(?:RMY)?\s+({province})\b[^.?!;]{{0,60}}?\b(?:TO|INTO|-)\s+({province})\b"
+                rf"[^.?!;]{{0,80}}?\bVIA\s+F\s+({province})\b",
+                normalized,
+            ):
+                add_claim(normalized, match, match.group(3), match.group(1), match.group(2))
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, bool]] = set()
+        for claim in claims:
+            key = (
+                claim["convoy_loc"],
+                claim["army_loc"],
+                claim["target_loc"],
+                bool(claim.get("request_to_human")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(claim)
+        return deduped
+
+    def _negative_convoy_denials_from_reply(self, content: str | None) -> list[str]:
+        if not content:
+            return []
+        province = r"[A-Z]{3}(?:/[A-Z]{2})?"
+        denials: list[str] = []
+        for sentence in re.split(r"(?<=[.?!;])\s+", str(content or "").upper()):
+            normalized = re.sub(r"\s+", " ", sentence.strip())
+            if not re.search(r"\b(?:CAN'?T|CANNOT|CAN NOT|NOT LEGAL|ILLEGAL|IMPOSSIBLE)\b", normalized):
+                continue
+            if "CONVOY" not in normalized and " C " not in f" {normalized} ":
+                continue
+            for match in re.finditer(
+                rf"\bF\s+({province})\s+C\s+A\s+({province})\s*(?:-|TO|INTO)\s*({province})\b",
+                normalized,
+            ):
+                denials.append(f"F {self._base_code(match.group(1))} C A {self._base_code(match.group(2))} - {self._base_code(match.group(3))}")
+        return denials
+
     def _reply_tactical_legality_conflict(
         self,
         content: str | None,
@@ -1556,6 +1642,25 @@ class HumanGameSession:
                     f"Draft says support for {supported_type} {supported_loc} - {target_loc} is impossible, "
                     f"but {power_name} has legal support orders including {legal_matches[0]}."
                 )
+
+        for denied_order in self._negative_convoy_denials_from_reply(content):
+            if denied_order in legal_orders:
+                return f"Draft says {denied_order} is not a legal convoy, but it is in {power_name}'s current legal-order list."
+
+        for claim in self._convoy_claims_from_reply(content):
+            if claim.get("request_to_human"):
+                continue
+            convoy_loc = claim["convoy_loc"]
+            army_loc = claim["army_loc"]
+            target_loc = claim["target_loc"]
+            convoy_order = f"F {convoy_loc} C A {army_loc} - {target_loc}"
+            convoy_unit = self._unit_for_power_at_location(units, power_name, convoy_loc)
+            if not convoy_unit:
+                return f"Draft promises {convoy_order}, but {power_name} has no current fleet at {convoy_loc} to order that convoy."
+            if convoy_unit[0] != "F":
+                return f"Draft promises {convoy_order}, but {power_name}'s unit at {convoy_loc} is not a fleet."
+            if legal_orders and convoy_order not in legal_orders:
+                return f"{convoy_order} is not in {power_name}'s current legal-order list."
 
         conflicts: list[tuple[tuple[str, str, str], str]] = []
         valid_pairs: set[tuple[str, str, str]] = set()
@@ -1613,7 +1718,7 @@ class HumanGameSession:
         )
         return (
             f"You're right to question that. {conflict} {phase_note}"
-            "Let's coordinate from legal adjacent orders next movement phase."
+            "Let's coordinate from exact legal orders next movement phase."
         )
 
     def _non_repeating_reply_fallback(
@@ -1672,6 +1777,7 @@ class HumanGameSession:
             previous_replies = self._recent_agent_replies(power_name)
             previous_replies_brief = self._recent_agent_replies_for_prompt(power_name)
             legal_orders_brief = self._possible_orders_brief(possible_orders)
+            human_legal_orders_brief = self._possible_orders_brief(self._possible_orders_for(self.human_power))
             board_fact_brief = self._agent_board_fact_brief(power_name, board_state, possible_orders)
 
             context = build_context_prompt(
@@ -1697,7 +1803,8 @@ class HumanGameSession:
                 f"RECENT REPLIES YOU ALREADY SENT TO {self.human_power}:\n{previous_replies_brief}\n\n"
                 f"LATEST MESSAGE FROM {self.human_power}: {latest_human_message or '(none)'}\n\n"
                 f"TACTICAL FACTS YOU MUST CHECK BEFORE REPLYING:\n{board_fact_brief}\n\n"
-                f"LEGAL ORDERS AVAILABLE TO {power_name} THIS PHASE:\n{legal_orders_brief}\n\n"
+                f"COMPLETE EXACT LEGAL ORDERS YOU ({power_name}) CAN ISSUE THIS PHASE:\n{legal_orders_brief}\n\n"
+                f"COMPLETE EXACT LEGAL ORDERS THE HUMAN ({self.human_power}) CAN ISSUE THIS PHASE:\n{human_legal_orders_brief}\n\n"
                 f"You are {power_name}. The human player controls {self.human_power}. "
                 f"Decide whether to send exactly one private diplomatic reply to {self.human_power}. "
                 "Use only information your power can legitimately know from public press, your private messages, "
@@ -1712,9 +1819,11 @@ class HumanGameSession:
                 "Do not describe a direct hostile occupation as merely surprising unless you are intentionally being diplomatic. "
                 "Treat concrete alliance commitments as tactical obligations: if you promised support, requested support, agreed to a DMZ, or coordinated a convoy, "
                 "address that explicitly and do not ignore it for generic expansion. "
-                "When promising support, convoy, retreat, build, or movement, copy an exact legal order from the legal-order list or clearly say it is only a future idea. "
+                "When promising support, convoy, retreat, build, or movement, copy an exact legal order from YOUR complete legal-order list or clearly say it is only a future idea. "
+                "You may ask the human to issue an order only if it appears in the human legal-order list. "
                 "Never claim you can order a unit to support itself or issue an order that is not currently legal. "
                 "Support rule: the supporting unit must be able to move to the destination being attacked or held; being adjacent to the attacking unit is not enough. "
+                "Convoy rule: each convoying fleet must have its own exact legal 'F SEA C A ORIGIN - DEST' order, and the army must have a legal 'A ORIGIN - DEST VIA' order. "
                 "If you name multiple support units, every named support unit must have its own exact legal support order. "
                 "Do not casually offer support into a center you own or a province you occupy; only do that if you explicitly mean to cede, trade, or abandon it. "
                 "Answer the latest human message directly. If they ask for ideas, propose one or two concrete, legal tactical ideas grounded in the current phase and units. "
@@ -1967,15 +2076,19 @@ class HumanGameSession:
                     return msg.content
         return ""
 
-    def _possible_orders_brief(self, possible_orders: dict[str, list[str]], limit_per_unit: int = 8) -> str:
+    def _possible_orders_brief(self, possible_orders: dict[str, list[str]], limit_per_unit: int | None = None) -> str:
         lines = []
         for loc, orders in possible_orders.items():
             if not orders:
                 continue
-            sample = "; ".join(orders[:limit_per_unit])
-            extra = f"; +{len(orders) - limit_per_unit} more" if len(orders) > limit_per_unit else ""
-            lines.append(f"{loc}: {sample}{extra}")
-        return "\n".join(lines) or "(No legal orders needed.)"
+            sample_orders = orders if limit_per_unit is None else orders[:limit_per_unit]
+            sample = "; ".join(sample_orders)
+            extra = f"; +{len(orders) - limit_per_unit} more" if limit_per_unit is not None and len(orders) > limit_per_unit else ""
+            lines.append(f"{loc} ({len(orders)} legal): {sample}{extra}")
+        if not lines:
+            return "(No legal orders needed.)"
+        header = "This list is complete for the current phase. Copy orders verbatim; if an exact order is absent, it is not legal for that power right now."
+        return "\n".join([header, *lines])
 
     def submit_orders(self, orders: list[str]) -> dict[str, Any]:
         with self.lock:

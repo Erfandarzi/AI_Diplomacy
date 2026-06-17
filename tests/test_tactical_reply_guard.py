@@ -105,3 +105,87 @@ def test_false_negative_support_legality_claim_is_rejected():
 
     assert conflict
     assert "F ENG - NTH" in conflict
+
+
+def test_invalid_convoy_promise_is_rejected():
+    game = Game()
+    game.clear_units()
+    game.set_units("GERMANY", ["A DEN", "F BAL"])
+    game.set_units("FRANCE", ["F NTH"])
+    game.set_units("ENGLAND", ["A YOR"])
+
+    session = HumanGameSession.__new__(HumanGameSession)
+    session.game = game
+    session.human_power = "FRANCE"
+
+    conflict = session._reply_tactical_legality_conflict(
+        "I will order F BAL C A DEN - YOR this spring.",
+        "GERMANY",
+        gather_possible_orders(game, "GERMANY"),
+        game.get_state(),
+    )
+
+    assert conflict
+    assert "F BAL C A DEN - YOR" in conflict
+
+
+def test_request_for_human_convoy_order_is_not_rejected_as_ai_order():
+    game = Game()
+    game.clear_units()
+    game.set_units("GERMANY", ["A DEN", "F BAL"])
+    game.set_units("FRANCE", ["F NTH"])
+    game.set_units("ENGLAND", ["A YOR"])
+
+    session = HumanGameSession.__new__(HumanGameSession)
+    session.game = game
+    session.human_power = "FRANCE"
+
+    conflict = session._reply_tactical_legality_conflict(
+        "Please order F NTH C A DEN - YOR and I will order A DEN - YOR VIA.",
+        "GERMANY",
+        gather_possible_orders(game, "GERMANY"),
+        game.get_state(),
+    )
+
+    assert conflict is None
+
+
+def test_valid_convoy_promise_is_allowed():
+    game = Game()
+    game.clear_units()
+    game.set_units("GERMANY", ["A DEN", "F NTH"])
+    game.set_units("ENGLAND", ["A YOR"])
+
+    session = HumanGameSession.__new__(HumanGameSession)
+    session.game = game
+    session.human_power = "FRANCE"
+
+    conflict = session._reply_tactical_legality_conflict(
+        "I will order F NTH C A DEN - YOR this spring.",
+        "GERMANY",
+        gather_possible_orders(game, "GERMANY"),
+        game.get_state(),
+    )
+
+    assert conflict is None
+
+
+def test_false_negative_convoy_legality_claim_is_rejected():
+    game = Game()
+    game.clear_units()
+    game.set_units("GERMANY", ["A DEN", "F NTH"])
+    game.set_units("ENGLAND", ["A YOR"])
+
+    session = HumanGameSession.__new__(HumanGameSession)
+    session.game = game
+    session.human_power = "FRANCE"
+
+    conflict = session._reply_tactical_legality_conflict(
+        "F NTH C A DEN - YOR is illegal, so I cannot do that convoy.",
+        "GERMANY",
+        gather_possible_orders(game, "GERMANY"),
+        game.get_state(),
+    )
+
+    assert conflict
+    assert "F NTH C A DEN - YOR" in conflict
